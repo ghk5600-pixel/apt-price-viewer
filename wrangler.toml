@@ -1,6 +1,7 @@
-name = "apartment-dashboard"
+name = "apt-price-viewer"
 compatibility_date = "2026-07-10"
 pages_build_output_dir = "."
+keep_vars = true
 
 [vars]
 # Public browser key. Keep the Kakao Developers JavaScript SDK domain restricted.
