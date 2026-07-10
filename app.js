@@ -395,8 +395,7 @@ function createKakaoMap() {
     ? new window.kakao.maps.services.Places()
     : null;
   el.mapCanvas.classList.add("kakao-ready");
-  el.mapCaptionTitle.textContent = "실제 카카오맵";
-  el.mapCaptionText.textContent = "마커를 클릭하면 해당 단지 상세로 이동합니다.";
+  el.mapCaption.hidden = true;
   window.setTimeout(() => {
     state.kakaoMap.relayout();
     syncKakaoMap();
