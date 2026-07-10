@@ -67,6 +67,7 @@ const el = {
   clearFavoritesButton: document.querySelector("#clearFavoritesButton"),
   mapCanvas: document.querySelector("#mapCanvas"),
   kakaoMap: document.querySelector("#kakaoMap"),
+  mapCaption: document.querySelector(".map-caption"),
   mapCaptionTitle: document.querySelector("#mapCaptionTitle"),
   mapCaptionText: document.querySelector("#mapCaptionText"),
   selectedDong: document.querySelector("#selectedDong"),
@@ -468,7 +469,7 @@ function setMapFallbackStatus(title, text) {
 
 function getKakaoMapConfig() {
   return {
-    kakaoJavaScriptKey: state.apiConfig.kakaoJavaScriptKey || "",
+    kakaoJavaScriptKey: state.apiConfig.kakaoJavaScriptKey || DEFAULT_KAKAO_JAVASCRIPT_KEY,
   };
 }
 
