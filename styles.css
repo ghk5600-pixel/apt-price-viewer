@@ -1,3 +1,4 @@
+/* Version: v2026.07.16-01-rc.1 | Updated: 2026-07-16 */
 :root {
   --background: #fafafa;
   --foreground: #0f172a;
@@ -519,11 +520,11 @@ input:focus-visible {
 }
 
 .favorite-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 28px 32px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px;
+  gap: 10px;
+  padding: 10px 12px;
   transition:
     border-color 0.2s ease,
     transform 0.2s ease;
@@ -534,6 +535,72 @@ input:focus-visible {
   background: transparent;
   color: inherit;
   text-align: left;
+}
+
+.favorite-select {
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.drag-handle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 36px;
+  padding: 0;
+  color: var(--muted-foreground) !important;
+  font-size: 1rem;
+  line-height: 1;
+  text-align: center !important;
+  cursor: grab;
+  touch-action: none;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.favorite-rank,
+.compare-rank {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.favorite-row.active .favorite-rank,
+.compare-row.active .compare-rank {
+  background: var(--accent);
+  color: #fff;
+}
+
+.favorite-row.drag-ghost {
+  opacity: 0.42;
+}
+
+.favorite-row.drag-chosen {
+  border-color: rgba(0, 82, 255, 0.55);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.16);
+}
+
+.favorite-limit-notice {
+  margin: -2px 0 10px;
+  padding: 9px 11px;
+  border: 1px solid rgba(0, 82, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(0, 82, 255, 0.05);
+  color: var(--muted-foreground);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.favorite-limit-notice[hidden] {
+  display: none;
 }
 
 .favorite-row.active {
@@ -697,25 +764,20 @@ input:focus-visible {
   transform: translate(-50%, -50%);
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--foreground);
+  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+  color: #fff;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+  font-size: 0.86rem;
+  font-weight: 800;
   transition:
     transform 0.2s ease,
     box-shadow 0.2s ease,
     background 0.2s ease;
 }
 
-.map-marker::after {
-  content: "";
-  width: 13px;
-  height: 13px;
-  border-radius: 999px;
-  background: var(--muted-foreground);
-}
-
-.map-marker.favorite::after {
-  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+.map-marker-number {
+  position: relative;
+  z-index: 1;
 }
 
 .map-marker.selected {
@@ -730,6 +792,40 @@ input:focus-visible {
   border: 1px solid rgba(77, 124, 255, 0.5);
   border-radius: inherit;
   animation: markerRing 2.6s ease-in-out infinite;
+}
+
+.kakao-number-marker {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+  color: #fff;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.32);
+  font-family: "Inter", "Noto Sans KR", sans-serif;
+  font-size: 0.86rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.kakao-number-marker:hover,
+.kakao-number-marker.selected {
+  transform: scale(1.14);
+  box-shadow: 0 12px 28px rgba(0, 82, 255, 0.42);
+}
+
+.kakao-number-marker.selected::before {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border: 1px solid rgba(0, 82, 255, 0.52);
+  border-radius: inherit;
 }
 
 .map-tooltip {
@@ -831,14 +927,14 @@ input:focus-visible {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(92px, 0.55fr));
+  grid-template-columns: 42px minmax(0, 1.2fr) repeat(3, minmax(92px, 0.55fr));
   gap: 12px;
   align-items: center;
   width: 100%;
 }
 
 .compare-row.header {
-  grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(92px, 0.55fr)) minmax(68px, 0.32fr);
+  grid-template-columns: 42px minmax(0, 1.2fr) repeat(3, minmax(92px, 0.55fr)) minmax(68px, 0.32fr);
   border: 0;
   background: transparent;
   color: var(--muted-foreground);
@@ -1512,7 +1608,11 @@ input:focus-visible {
   }
 
   .compare-main {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 36px minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .compare-name {
+    grid-column: 2 / -1;
   }
 
   .compare-remove {
@@ -1557,6 +1657,11 @@ input:focus-visible {
   .complex-row,
   .transaction-row {
     grid-template-columns: 1fr;
+  }
+
+  .favorite-row {
+    grid-template-columns: 26px 30px minmax(0, 1fr) auto;
+    gap: 8px;
   }
 
   .toggle-button {

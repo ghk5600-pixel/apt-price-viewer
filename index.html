@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="app-version" content="v2026.07.16-01-rc.1" />
+    <meta name="app-updated-at" content="2026-07-16" />
     <title>관심단지 실거래 모니터</title>
     <link rel="icon" href="data:," />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -11,7 +13,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+KR:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20260710-map-caption2" />
+    <link rel="stylesheet" href="./styles.css?v=20260716-01-rc1" />
   </head>
   <body>
     <div class="page-shell">
@@ -66,8 +68,9 @@
                 <span class="eyebrow">Watchlist</span>
                 <h2>관심단지</h2>
               </div>
-              <span class="count-pill" id="favoriteCount">0</span>
+              <span class="count-pill" id="favoriteCount">0 / 20</span>
             </div>
+            <p class="favorite-limit-notice" id="favoriteLimitNotice" role="status" aria-live="polite" hidden></p>
             <div class="favorite-list" id="favoriteList"></div>
           </div>
         </section>
@@ -243,6 +246,7 @@
       </section>
     </div>
 
-    <script src="./app.js?v=20260710-map-caption2"></script>
+    <script src="./vendor/sortable-1.15.7.min.js?v=20260716-01-rc1"></script>
+    <script src="./app.js?v=20260716-01-rc1"></script>
   </body>
 </html>
