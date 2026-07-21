@@ -1,4 +1,7 @@
+const APP_VERSION = "v2026.07.16-01-rc.2";
+const APP_UPDATED_AT = "2026-07-21";
 const REFERENCE_MONTH = "2026-07";
+const MAX_FAVORITES = 20;
 const FAVORITES_KEY = "apt-monitor-favorites-v1";
 const CUSTOM_COMPLEXES_KEY = "apt-monitor-custom-complexes-v1";
 const API_CONFIG_KEY = "apt-monitor-api-config-v1";
@@ -57,12 +60,15 @@ const state = {
   kakaoSdkStatus: "idle",
   searchDebounceId: null,
   searchRequestId: 0,
+  favoriteSortable: null,
+  comparisonSortable: null,
 };
 
 const el = {
   resultList: document.querySelector("#resultList"),
   favoriteList: document.querySelector("#favoriteList"),
   favoriteCount: document.querySelector("#favoriteCount"),
+  favoriteLimitNotice: document.querySelector("#favoriteLimitNotice"),
   complexSearch: document.querySelector("#complexSearch"),
   clearFavoritesButton: document.querySelector("#clearFavoritesButton"),
   mapCanvas: document.querySelector("#mapCanvas"),
@@ -108,6 +114,8 @@ const transactionsByComplex = Object.fromEntries(
 initialize();
 
 function initialize() {
+  document.documentElement.dataset.appVersion = APP_VERSION;
+  document.documentElement.dataset.appUpdatedAt = APP_UPDATED_AT;
   const savedFavoriteCount = state.favorites.length;
   const knownComplexIds = new Set(COMPLEXES.map((complex) => complex.id));
   state.favorites = state.favorites.filter((id) => knownComplexIds.has(id));
@@ -120,6 +128,8 @@ function initialize() {
   fillHeaderControls();
   bindEvents();
   render();
+  initializeFavoriteSorting();
+  initializeComparisonSorting();
 }
 
 function bindEvents() {
@@ -406,39 +416,59 @@ function createKakaoMap() {
   }, 0);
 }
 
-function syncKakaoMap() {
+function syncKakaoMap(options = {}) {
   if (!state.kakaoMap || !window.kakao?.maps) return;
 
   state.kakaoMarkers.forEach((marker) => marker.setMap(null));
-  const favoriteComplexes = getFavoriteComplexes();
-  state.kakaoMarkers = favoriteComplexes.map((complex) => {
-    const marker = new window.kakao.maps.Marker({
+  const favoriteEntries = getOrderedFavoriteComplexes();
+  state.kakaoMarkers = favoriteEntries.map(({ complex, rank }) => {
+    const markerContent = document.createElement("button");
+    markerContent.type = "button";
+    markerContent.className = [
+      "kakao-number-marker",
+      state.selectedComplexId === complex.id ? "selected" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    markerContent.textContent = String(rank);
+    markerContent.title = `${rank}. ${complex.name}`;
+    markerContent.setAttribute("aria-label", `${rank}번 ${complex.name} 지도 마커`);
+    markerContent.addEventListener("click", () => selectComplex(complex.id));
+
+    return new window.kakao.maps.CustomOverlay({
       map: state.kakaoMap,
       position: new window.kakao.maps.LatLng(complex.lat, complex.lng),
-      title: complex.name,
+      content: markerContent,
+      clickable: true,
+      xAnchor: 0.5,
+      yAnchor: 1,
+      zIndex: state.selectedComplexId === complex.id ? 4 : 3,
     });
-    window.kakao.maps.event.addListener(marker, "click", () => selectComplex(complex.id));
-    return marker;
   });
 
   const selected = getSelectedComplex();
   if (!selected) {
-    state.kakaoMap.setCenter(new window.kakao.maps.LatLng(DEFAULT_MAP_CENTER.lat, DEFAULT_MAP_CENTER.lng));
+    if (!options.preserveViewport) {
+      state.kakaoMap.setCenter(new window.kakao.maps.LatLng(DEFAULT_MAP_CENTER.lat, DEFAULT_MAP_CENTER.lng));
+    }
     if (state.kakaoInfoWindow) state.kakaoInfoWindow.close();
     return;
   }
 
   const selectedPosition = new window.kakao.maps.LatLng(selected.lat, selected.lng);
-  state.kakaoMap.setCenter(selectedPosition);
+  if (!options.preserveViewport) {
+    state.kakaoMap.setCenter(selectedPosition);
+  }
+  const selectedRank = favoriteEntries.find((entry) => entry.complex.id === selected.id)?.rank;
   state.kakaoInfoWindow.setContent(`
     <div style="min-width:180px;padding:12px 14px;color:#0f172a;font-family:Inter,'Noto Sans KR',sans-serif;">
-      <strong style="display:block;margin-bottom:4px;font-size:14px;">${selected.name}</strong>
+      <strong style="display:block;margin-bottom:4px;font-size:14px;">${selectedRank ? `${selectedRank}. ` : ""}${selected.name}</strong>
       <span style="display:block;color:#64748b;font-size:12px;">${selected.dong} · ${formatHouseholdsAndBuildings(selected)}</span>
     </div>
   `);
-  const selectedMarker = state.kakaoMarkers[favoriteComplexes.findIndex((complex) => complex.id === selected.id)];
-  if (selectedMarker) {
-    state.kakaoInfoWindow.open(state.kakaoMap, selectedMarker);
+  if (selectedRank) {
+    state.kakaoInfoWindow.setPosition(selectedPosition);
+    state.kakaoInfoWindow.open(state.kakaoMap);
   } else if (state.kakaoInfoWindow) {
     state.kakaoInfoWindow.close();
   }
@@ -773,6 +803,16 @@ function toggleKakaoPlaceFavorite(placeId) {
   if (!place) return;
 
   const existing = findRegisteredPlace(place);
+  if (existing && state.favorites.includes(existing.id)) {
+    toggleFavorite(existing.id);
+    return;
+  }
+  if (!canAddFavorite()) {
+    renderFavorites();
+    renderResults();
+    return;
+  }
+
   const complex = existing || createComplexFromKakaoPlace(place);
 
   if (!existing) {
@@ -781,17 +821,10 @@ function toggleKakaoPlaceFavorite(placeId) {
     saveCustomComplexes();
   }
 
-  if (state.favorites.includes(complex.id)) {
-    toggleFavorite(complex.id);
-    return;
+  const shouldRefreshAfterToggle = Boolean(transactionsByComplex[complex.id]?.length);
+  if (toggleFavorite(complex.id) && shouldRefreshAfterToggle) {
+    refreshRealTransactionsForComplex(complex.id);
   }
-
-  state.favorites = [...state.favorites, complex.id];
-  state.selectedComplexId = complex.id;
-  saveFavorites();
-  ensureValidAreaGroup();
-  render();
-  refreshRealTransactionsForComplex(complex.id);
 }
 
 async function toggleAptListFavorite(searchId) {
@@ -799,6 +832,16 @@ async function toggleAptListFavorite(searchId) {
   if (!candidate) return;
 
   const existing = findRegisteredAptListCandidate(candidate);
+  if (existing && state.favorites.includes(existing.id)) {
+    toggleFavorite(existing.id);
+    return;
+  }
+  if (!canAddFavorite()) {
+    renderFavorites();
+    renderResults();
+    return;
+  }
+
   let enrichedCandidate = candidate;
   if (!existing && candidate.coordinateSource !== "kakao") {
     try {
@@ -810,6 +853,12 @@ async function toggleAptListFavorite(searchId) {
     } catch {
       enrichedCandidate = candidate;
     }
+  }
+
+  if (!canAddFavorite()) {
+    renderFavorites();
+    renderResults();
+    return;
   }
 
   const complex = existing || createComplexFromAptListCandidate(enrichedCandidate);
@@ -1772,6 +1821,7 @@ function renderResults() {
 function renderComplexRow(complex) {
   const isFavorite = state.favorites.includes(complex.id);
   const isSelected = state.selectedComplexId === complex.id;
+  const isAddDisabled = !isFavorite && isFavoriteLimitReached();
   return `
     <article class="complex-row">
       <button class="complex-main ghost-reset" type="button" data-select="${complex.id}" aria-label="${complex.name} 선택">
@@ -1791,8 +1841,9 @@ function renderComplexRow(complex) {
         type="button"
         data-toggle="${complex.id}"
         aria-pressed="${isFavorite}"
+        ${isAddDisabled ? `disabled title="관심단지는 최대 ${MAX_FAVORITES}개까지 등록할 수 있습니다."` : ""}
       >
-        ${isFavorite ? "등록됨" : "관심"}
+        ${isFavorite ? "등록됨" : isAddDisabled ? "한도 도달" : "관심"}
       </button>
     </article>
   `;
@@ -1801,6 +1852,7 @@ function renderComplexRow(complex) {
 function renderKakaoPlaceRow(place) {
   const registered = findRegisteredPlace(place);
   const isFavorite = registered ? state.favorites.includes(registered.id) : false;
+  const isAddDisabled = !isFavorite && isFavoriteLimitReached();
   const address = place.road_address_name || place.address_name || "";
   return `
     <article class="complex-row kakao-result-row">
@@ -1820,8 +1872,9 @@ function renderKakaoPlaceRow(place) {
         type="button"
         data-kakao-add="${place.id}"
         aria-pressed="${isFavorite}"
+        ${isAddDisabled ? `disabled title="관심단지는 최대 ${MAX_FAVORITES}개까지 등록할 수 있습니다."` : ""}
       >
-        ${isFavorite ? "등록됨" : "관심"}
+        ${isFavorite ? "등록됨" : isAddDisabled ? "한도 도달" : "관심"}
       </button>
     </article>
   `;
@@ -1830,6 +1883,7 @@ function renderKakaoPlaceRow(place) {
 function renderAptListSearchRow(candidate) {
   const registered = findRegisteredAptListCandidate(candidate);
   const isFavorite = registered ? state.favorites.includes(registered.id) : false;
+  const isAddDisabled = !isFavorite && isFavoriteLimitReached();
   return `
     <article class="complex-row aptlist-result-row">
       <div class="complex-main">
@@ -1848,29 +1902,41 @@ function renderAptListSearchRow(candidate) {
         type="button"
         data-aptlist-add="${candidate.searchId}"
         aria-pressed="${isFavorite}"
+        ${isAddDisabled ? `disabled title="관심단지는 최대 ${MAX_FAVORITES}개까지 등록할 수 있습니다."` : ""}
       >
-        ${isFavorite ? "등록됨" : "관심"}
+        ${isFavorite ? "등록됨" : isAddDisabled ? "한도 도달" : "관심"}
       </button>
     </article>
   `;
 }
 
 function renderFavorites() {
-  el.favoriteCount.textContent = String(state.favorites.length);
+  el.favoriteCount.textContent = `${state.favorites.length} / ${MAX_FAVORITES}`;
+  const isOverLimit = state.favorites.length > MAX_FAVORITES;
+  el.favoriteLimitNotice.hidden = !isFavoriteLimitReached();
+  el.favoriteLimitNotice.textContent = isOverLimit
+    ? `현재 ${state.favorites.length}개가 등록되어 있습니다. ${MAX_FAVORITES}개 이하가 될 때까지 신규 등록이 제한됩니다.`
+    : `관심단지는 최대 ${MAX_FAVORITES}개까지 등록할 수 있습니다.`;
 
   if (!state.favorites.length) {
     el.favoriteList.innerHTML = `<div class="empty-state">관심단지를 등록하면<br />비교표와 대시보드가 채워집니다.</div>`;
     return;
   }
 
-  el.favoriteList.innerHTML = state.favorites
-    .map((id) => COMPLEXES.find((complex) => complex.id === id))
-    .filter(Boolean)
-    .map((complex) => {
+  el.favoriteList.innerHTML = getOrderedFavoriteComplexes()
+    .map(({ complex, rank }) => {
       const isSelected = state.selectedComplexId === complex.id;
       return `
-        <article class="favorite-row ${isSelected ? "active" : ""}">
-          <button type="button" data-favorite-select="${complex.id}" aria-label="${complex.name} 상세 보기">
+        <article class="favorite-row ${isSelected ? "active" : ""}" data-favorite-id="${complex.id}">
+          <button
+            class="drag-handle"
+            type="button"
+            data-drag-handle="${complex.id}"
+            aria-label="${rank}번 ${complex.name} 순서 변경. 위아래 방향키를 사용할 수 있습니다."
+            title="드래그하여 순서 변경"
+          ><span aria-hidden="true">⋮⋮</span></button>
+          <span class="favorite-rank" aria-label="${rank}번">${rank}</span>
+          <button class="favorite-select" type="button" data-favorite-select="${complex.id}" aria-label="${complex.name} 상세 보기">
             <div class="favorite-main">
               <strong>${complex.name}</strong>
               <p>${complex.dong} · ${formatHouseholdsAndBuildings(complex)}</p>
@@ -1889,12 +1955,22 @@ function renderFavorites() {
   el.favoriteList.querySelectorAll("[data-favorite-remove]").forEach((button) => {
     button.addEventListener("click", () => toggleFavorite(button.dataset.favoriteRemove));
   });
+
+  el.favoriteList.querySelectorAll("[data-drag-handle]").forEach((button) => {
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      const fromIndex = state.favorites.indexOf(button.dataset.dragHandle);
+      const offset = event.key === "ArrowUp" ? -1 : 1;
+      moveFavorite(fromIndex, fromIndex + offset, button.dataset.dragHandle, "favorites");
+    });
+  });
 }
 
-function renderMap() {
+function renderMap(options = {}) {
   el.mapCanvas.querySelectorAll(".map-marker").forEach((marker) => marker.remove());
 
-  getFavoriteComplexes().forEach((complex) => {
+  getOrderedFavoriteComplexes().forEach(({ complex, rank }) => {
     const marker = document.createElement("button");
     marker.className = [
       "map-marker",
@@ -1906,13 +1982,16 @@ function renderMap() {
     marker.type = "button";
     marker.style.left = `${complex.mapX}%`;
     marker.style.top = `${complex.mapY}%`;
-    marker.setAttribute("aria-label", `${complex.name} 지도 마커`);
-    marker.innerHTML = `<span class="map-tooltip"><strong>${complex.name}</strong><br />${complex.dong} · ${formatHouseholdsAndBuildings(complex)}</span>`;
+    marker.setAttribute("aria-label", `${rank}번 ${complex.name} 지도 마커`);
+    marker.innerHTML = `
+      <span class="map-marker-number" aria-hidden="true">${rank}</span>
+      <span class="map-tooltip"><strong>${rank}. ${complex.name}</strong><br />${complex.dong} · ${formatHouseholdsAndBuildings(complex)}</span>
+    `;
     marker.addEventListener("click", () => selectComplex(complex.id));
     el.mapCanvas.appendChild(marker);
   });
 
-  syncKakaoMap();
+  syncKakaoMap(options);
 }
 
 function renderGlobalAreaTabs() {
@@ -2234,25 +2313,27 @@ function renderTransactions(scopedTransactions) {
 }
 
 function renderComparison() {
-  const favoriteComplexes = state.favorites.map((id) => COMPLEXES.find((complex) => complex.id === id)).filter(Boolean);
+  const favoriteEntries = getOrderedFavoriteComplexes();
   const group = getAreaGroupMeta(state.selectedAreaGroupId);
   const range = getRangeMeta();
 
-  if (!favoriteComplexes.length) {
+  if (!favoriteEntries.length) {
     el.comparisonTable.innerHTML = `<div class="empty-state">관심단지를 등록하면 ${range.label} · ${group.label} 기준 비교표가 표시됩니다.</div>`;
     return;
   }
 
-  const rows = favoriteComplexes.map((complex) => {
+  const rows = favoriteEntries.map(({ complex, rank }) => {
     const txs = filterTransactionsBySelectedRange(
       (transactionsByComplex[complex.id] || []).filter((tx) => tx.areaGroupId === state.selectedAreaGroupId)
     );
     const metrics = calculateMetrics(txs);
-    return { complex, txs, metrics };
+    return { complex, rank, txs, metrics };
   });
 
   el.comparisonTable.innerHTML = `
     <div class="compare-row header">
+      <span aria-hidden="true"></span>
+      <span>순번</span>
       <span>단지</span>
       <span>최근가</span>
       <span>평당가</span>
@@ -2260,11 +2341,19 @@ function renderComparison() {
       <span>관리</span>
     </div>
     ${rows
-      .map(({ complex, txs, metrics }) => {
+      .map(({ complex, rank, txs, metrics }) => {
         const isSelected = state.selectedComplexId === complex.id;
         return `
-          <article class="compare-row ${isSelected ? "active" : ""}">
+          <article class="compare-row ${isSelected ? "active" : ""}" data-compare-id="${complex.id}">
+            <button
+              class="drag-handle compare-drag-handle"
+              type="button"
+              data-compare-drag-handle="${complex.id}"
+              aria-label="${rank}번 ${complex.name} 순서 변경. 위아래 방향키를 사용할 수 있습니다."
+              title="드래그하여 순서 변경"
+            ><span aria-hidden="true">⋮⋮</span></button>
             <button class="compare-main ghost-reset" type="button" data-compare-select="${complex.id}">
+              <span class="compare-rank" aria-label="${rank}번">${rank}</span>
               <span class="compare-name">
                 <strong>${complex.name}</strong>
                 <span>${complex.dong} · ${formatHouseholdsAndBuildings(complex)}</span>
@@ -2295,6 +2384,15 @@ function renderComparison() {
   el.comparisonTable.querySelectorAll("[data-compare-remove]").forEach((button) => {
     button.addEventListener("click", () => toggleFavorite(button.dataset.compareRemove));
   });
+  el.comparisonTable.querySelectorAll("[data-compare-drag-handle]").forEach((button) => {
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      const fromIndex = state.favorites.indexOf(button.dataset.compareDragHandle);
+      const offset = event.key === "ArrowUp" ? -1 : 1;
+      moveFavorite(fromIndex, fromIndex + offset, button.dataset.compareDragHandle, "comparison");
+    });
+  });
 }
 
 function selectComplex(id) {
@@ -2306,9 +2404,15 @@ function selectComplex(id) {
 
 function toggleFavorite(id) {
   const complex = COMPLEXES.find((item) => item.id === id);
-  if (!complex) return;
+  if (!complex) return false;
   const wasSelected = state.selectedComplexId === id;
   const wasFavorite = state.favorites.includes(id);
+
+  if (!wasFavorite && !canAddFavorite()) {
+    renderFavorites();
+    renderResults();
+    return false;
+  }
 
   if (state.favorites.includes(id)) {
     state.favorites = state.favorites.filter((favoriteId) => favoriteId !== id);
@@ -2331,6 +2435,7 @@ function toggleFavorite(id) {
   if (!wasFavorite && isUserRegisteredSource(complex?.source) && !transactionsByComplex[complex.id]?.length) {
     refreshRealTransactionsForComplex(complex.id);
   }
+  return true;
 }
 
 function ensureValidAreaGroup() {
@@ -2348,6 +2453,105 @@ function getSelectedComplex() {
 
 function getFavoriteComplexes() {
   return state.favorites.map((id) => COMPLEXES.find((complex) => complex.id === id)).filter(Boolean);
+}
+
+function getOrderedFavoriteComplexes() {
+  return getFavoriteComplexes().map((complex, index) => ({
+    complex,
+    rank: index + 1,
+  }));
+}
+
+function isFavoriteLimitReached() {
+  return state.favorites.length >= MAX_FAVORITES;
+}
+
+function canAddFavorite() {
+  return state.favorites.length < MAX_FAVORITES;
+}
+
+function initializeFavoriteSorting() {
+  if (state.favoriteSortable || !el.favoriteList) return;
+  if (!window.Sortable) {
+    el.favoriteList.dataset.sortableStatus = "unavailable";
+    return;
+  }
+
+  state.favoriteSortable = window.Sortable.create(el.favoriteList, {
+    animation: 160,
+    handle: "[data-drag-handle]",
+    draggable: ".favorite-row",
+    forceFallback: true,
+    fallbackTolerance: 3,
+    ghostClass: "drag-ghost",
+    chosenClass: "drag-chosen",
+    onEnd(event) {
+      const fromIndex = event.oldDraggableIndex ?? event.oldIndex;
+      const toIndex = event.newDraggableIndex ?? event.newIndex;
+      moveFavorite(fromIndex, toIndex);
+    },
+  });
+  el.favoriteList.dataset.sortableStatus = "ready";
+}
+
+function initializeComparisonSorting() {
+  if (state.comparisonSortable || !el.comparisonTable) return;
+  if (!window.Sortable) {
+    el.comparisonTable.dataset.sortableStatus = "unavailable";
+    return;
+  }
+
+  state.comparisonSortable = window.Sortable.create(el.comparisonTable, {
+    animation: 160,
+    handle: "[data-compare-drag-handle]",
+    draggable: ".compare-row[data-compare-id]",
+    forceFallback: true,
+    fallbackTolerance: 3,
+    ghostClass: "drag-ghost",
+    chosenClass: "drag-chosen",
+    onEnd(event) {
+      const fromIndex = event.oldDraggableIndex ?? event.oldIndex;
+      const toIndex = event.newDraggableIndex ?? event.newIndex;
+      moveFavorite(fromIndex, toIndex);
+    },
+  });
+  el.comparisonTable.dataset.sortableStatus = "ready";
+}
+
+function moveFavorite(fromIndex, toIndex, focusId = "", focusView = "favorites") {
+  if (
+    !Number.isInteger(fromIndex) ||
+    !Number.isInteger(toIndex) ||
+    fromIndex === toIndex ||
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= state.favorites.length ||
+    toIndex >= state.favorites.length
+  ) {
+    return;
+  }
+
+  const nextFavorites = [...state.favorites];
+  const [movedId] = nextFavorites.splice(fromIndex, 1);
+  nextFavorites.splice(toIndex, 0, movedId);
+  state.favorites = nextFavorites;
+  saveFavorites();
+  renderFavoriteOrderViews();
+
+  if (focusId) {
+    window.requestAnimationFrame(() => {
+      const isComparison = focusView === "comparison";
+      const container = isComparison ? el.comparisonTable : el.favoriteList;
+      const attribute = isComparison ? "data-compare-drag-handle" : "data-drag-handle";
+      container.querySelector(`[${attribute}="${focusId}"]`)?.focus();
+    });
+  }
+}
+
+function renderFavoriteOrderViews() {
+  renderFavorites();
+  renderComparison();
+  renderMap({ preserveViewport: true });
 }
 
 function isUserRegisteredSource(source) {
