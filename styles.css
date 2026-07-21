@@ -1,4 +1,4 @@
-/* Version: v2026.07.16-01-rc.1 | Updated: 2026-07-16 */
+/* Version: v2026.07.16-01-rc.2 | Updated: 2026-07-21 */
 :root {
   --background: #fafafa;
   --foreground: #0f172a;
@@ -543,6 +543,8 @@ input:focus-visible {
 }
 
 .drag-handle {
+  position: relative;
+  z-index: 2;
   display: grid;
   place-items: center;
   width: 28px;
@@ -554,6 +556,8 @@ input:focus-visible {
   text-align: center !important;
   cursor: grab;
   touch-action: none;
+  border: 0;
+  background: transparent;
 }
 
 .drag-handle:active {
@@ -579,11 +583,13 @@ input:focus-visible {
   color: #fff;
 }
 
-.favorite-row.drag-ghost {
+.favorite-row.drag-ghost,
+.compare-row.drag-ghost {
   opacity: 0.42;
 }
 
-.favorite-row.drag-chosen {
+.favorite-row.drag-chosen,
+.compare-row.drag-chosen {
   border-color: rgba(0, 82, 255, 0.55);
   box-shadow: 0 12px 26px rgba(15, 23, 42, 0.16);
 }
@@ -916,7 +922,7 @@ input:focus-visible {
 
 .compare-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
   padding: 13px 14px;
@@ -934,7 +940,7 @@ input:focus-visible {
 }
 
 .compare-row.header {
-  grid-template-columns: 42px minmax(0, 1.2fr) repeat(3, minmax(92px, 0.55fr)) minmax(68px, 0.32fr);
+  grid-template-columns: 28px 42px minmax(0, 1.2fr) repeat(3, minmax(92px, 0.55fr)) minmax(68px, 0.32fr);
   border: 0;
   background: transparent;
   color: var(--muted-foreground);
@@ -1600,7 +1606,7 @@ input:focus-visible {
   }
 
   .compare-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 28px minmax(0, 1fr);
   }
 
   .compare-row.header {
@@ -1608,6 +1614,7 @@ input:focus-visible {
   }
 
   .compare-main {
+    grid-column: 2;
     grid-template-columns: 36px minmax(0, 1fr) minmax(0, 1fr);
   }
 
@@ -1616,6 +1623,7 @@ input:focus-visible {
   }
 
   .compare-remove {
+    grid-column: 2;
     width: fit-content;
   }
 

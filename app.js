@@ -1,5 +1,5 @@
-const APP_VERSION = "v2026.07.16-01-rc.1";
-const APP_UPDATED_AT = "2026-07-16";
+const APP_VERSION = "v2026.07.16-01-rc.2";
+const APP_UPDATED_AT = "2026-07-21";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
 const FAVORITES_KEY = "apt-monitor-favorites-v1";
@@ -61,6 +61,7 @@ const state = {
   searchDebounceId: null,
   searchRequestId: 0,
   favoriteSortable: null,
+  comparisonSortable: null,
 };
 
 const el = {
@@ -128,6 +129,7 @@ function initialize() {
   bindEvents();
   render();
   initializeFavoriteSorting();
+  initializeComparisonSorting();
 }
 
 function bindEvents() {
@@ -1960,7 +1962,7 @@ function renderFavorites() {
       event.preventDefault();
       const fromIndex = state.favorites.indexOf(button.dataset.dragHandle);
       const offset = event.key === "ArrowUp" ? -1 : 1;
-      moveFavorite(fromIndex, fromIndex + offset, button.dataset.dragHandle);
+      moveFavorite(fromIndex, fromIndex + offset, button.dataset.dragHandle, "favorites");
     });
   });
 }
@@ -2330,6 +2332,7 @@ function renderComparison() {
 
   el.comparisonTable.innerHTML = `
     <div class="compare-row header">
+      <span aria-hidden="true"></span>
       <span>순번</span>
       <span>단지</span>
       <span>최근가</span>
@@ -2341,7 +2344,14 @@ function renderComparison() {
       .map(({ complex, rank, txs, metrics }) => {
         const isSelected = state.selectedComplexId === complex.id;
         return `
-          <article class="compare-row ${isSelected ? "active" : ""}">
+          <article class="compare-row ${isSelected ? "active" : ""}" data-compare-id="${complex.id}">
+            <button
+              class="drag-handle compare-drag-handle"
+              type="button"
+              data-compare-drag-handle="${complex.id}"
+              aria-label="${rank}번 ${complex.name} 순서 변경. 위아래 방향키를 사용할 수 있습니다."
+              title="드래그하여 순서 변경"
+            ><span aria-hidden="true">⋮⋮</span></button>
             <button class="compare-main ghost-reset" type="button" data-compare-select="${complex.id}">
               <span class="compare-rank" aria-label="${rank}번">${rank}</span>
               <span class="compare-name">
@@ -2373,6 +2383,15 @@ function renderComparison() {
   });
   el.comparisonTable.querySelectorAll("[data-compare-remove]").forEach((button) => {
     button.addEventListener("click", () => toggleFavorite(button.dataset.compareRemove));
+  });
+  el.comparisonTable.querySelectorAll("[data-compare-drag-handle]").forEach((button) => {
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      const fromIndex = state.favorites.indexOf(button.dataset.compareDragHandle);
+      const offset = event.key === "ArrowUp" ? -1 : 1;
+      moveFavorite(fromIndex, fromIndex + offset, button.dataset.compareDragHandle, "comparison");
+    });
   });
 }
 
@@ -2475,7 +2494,31 @@ function initializeFavoriteSorting() {
   el.favoriteList.dataset.sortableStatus = "ready";
 }
 
-function moveFavorite(fromIndex, toIndex, focusId = "") {
+function initializeComparisonSorting() {
+  if (state.comparisonSortable || !el.comparisonTable) return;
+  if (!window.Sortable) {
+    el.comparisonTable.dataset.sortableStatus = "unavailable";
+    return;
+  }
+
+  state.comparisonSortable = window.Sortable.create(el.comparisonTable, {
+    animation: 160,
+    handle: "[data-compare-drag-handle]",
+    draggable: ".compare-row[data-compare-id]",
+    forceFallback: true,
+    fallbackTolerance: 3,
+    ghostClass: "drag-ghost",
+    chosenClass: "drag-chosen",
+    onEnd(event) {
+      const fromIndex = event.oldDraggableIndex ?? event.oldIndex;
+      const toIndex = event.newDraggableIndex ?? event.newIndex;
+      moveFavorite(fromIndex, toIndex);
+    },
+  });
+  el.comparisonTable.dataset.sortableStatus = "ready";
+}
+
+function moveFavorite(fromIndex, toIndex, focusId = "", focusView = "favorites") {
   if (
     !Number.isInteger(fromIndex) ||
     !Number.isInteger(toIndex) ||
@@ -2497,7 +2540,10 @@ function moveFavorite(fromIndex, toIndex, focusId = "") {
 
   if (focusId) {
     window.requestAnimationFrame(() => {
-      el.favoriteList.querySelector(`[data-drag-handle="${focusId}"]`)?.focus();
+      const isComparison = focusView === "comparison";
+      const container = isComparison ? el.comparisonTable : el.favoriteList;
+      const attribute = isComparison ? "data-compare-drag-handle" : "data-drag-handle";
+      container.querySelector(`[${attribute}="${focusId}"]`)?.focus();
     });
   }
 }
