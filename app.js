@@ -1,5 +1,5 @@
-const APP_VERSION = "v2026.07.16-01-rc.2";
-const APP_UPDATED_AT = "2026-07-21";
+const APP_VERSION = "v2026.07.16-01";
+const APP_UPDATED_AT = "2026-07-28";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
 const FAVORITES_KEY = "apt-monitor-favorites-v1";
