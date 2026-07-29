@@ -13,9 +13,12 @@ functions/
     apt-list.js
     apt-basis.js
     building-ledger.js
+    supply-profile.js
     rtms.js
   _shared/
     molit.js
+    supply-area.js
+    supply-store.js
 ```
 
 브라우저는 배포 환경에서 국토부 API를 직접 호출하지 않고 아래 경로를 호출합니다.
@@ -24,6 +27,7 @@ functions/
 /api/apt-list
 /api/apt-basis
 /api/building-ledger
+/api/supply-profile
 /api/rtms
 ```
 
@@ -36,6 +40,7 @@ Cloudflare Pages Functions가 `MOLIT_SERVICE_KEY` secret을 사용해 국토부 
 3. Cloudflare Pages 프로젝트
 4. 카카오 Developers JavaScript SDK 도메인 추가
 5. Cloudflare Pages secret 등록
+6. Cloudflare D1 데이터베이스와 `SUPPLY_DB` 바인딩
 
 ## Cloudflare Secret
 
@@ -55,6 +60,24 @@ Settings
 
 Preview 환경은 테스트 배포용입니다. 실제 `https://apt-price-viewer.pages.dev` 주소에는
 Production 설정이 적용됩니다.
+
+## 공급면적 공용 저장소
+
+`/api/supply-profile`은 D1 바인딩 이름 `SUPPLY_DB`를 사용합니다.
+
+```text
+Workers & Pages
+→ apt-price-viewer
+→ Settings
+→ Bindings
+→ Add
+→ D1 database
+→ Variable name: SUPPLY_DB
+```
+
+테이블 정의는 `migrations/0001_supply_profile_cache.sql`에 있습니다. 함수도 최초
+요청에서 동일한 테이블이 없으면 자동 생성합니다. Preview에 D1이 아직 연결되지
+않은 경우 RC는 엣지 캐시로 시험 동작하지만, 영구 공용 저장 검증에는 D1이 필요합니다.
 
 ## Cloudflare Build 설정
 
@@ -92,7 +115,6 @@ https://apt-price-viewer.pages.dev
 
 아직 다음 단계로 남겨둔 것:
 
-- Cloudflare D1 캐시 저장
 - 팀 공용 관심단지 DB 저장
 - Cloudflare Access 접근제어 설정
 
@@ -107,4 +129,9 @@ http://localhost:8080
 
 로컬 Python 서버에서는 Pages Functions가 실행되지 않으므로 국토부 API는 기존처럼 설정 메뉴에 저장된 국토부 키를 사용합니다.
 
-Cloudflare Functions까지 로컬에서 테스트하려면 나중에 Wrangler 개발 서버를 사용합니다.
+공급면적 계산, Pages Functions, 로컬 D1까지 함께 시험하려면:
+
+```text
+start-rc-local.cmd
+http://127.0.0.1:8788/?apiProxy=1
+```

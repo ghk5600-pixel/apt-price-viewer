@@ -9,7 +9,12 @@ import {
   requireServiceKey,
 } from "../_shared/molit.js";
 
-const ALLOWED_OPERATIONS = new Set(["getBrRecapTitleInfo", "getBrTitleInfo"]);
+const ALLOWED_OPERATIONS = new Set([
+  "getBrRecapTitleInfo",
+  "getBrTitleInfo",
+  "getBrAtchJibunInfo",
+  "getBrExposPubuseAreaInfo",
+]);
 
 export async function onRequestGet({ request, env }) {
   try {

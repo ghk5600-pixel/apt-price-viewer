@@ -1,5 +1,5 @@
-const APP_VERSION = "v2026.07.16-01";
-const APP_UPDATED_AT = "2026-07-28";
+const APP_VERSION = "v2026.07.29-01-rc.1";
+const APP_UPDATED_AT = "2026-07-29";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
 const FAVORITES_KEY = "apt-monitor-favorites-v1";
@@ -17,13 +17,14 @@ const BUILDING_HUB_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
 const DEFAULT_KAKAO_JAVASCRIPT_KEY = "f1381fcba950abff23056942bd19d544";
 const ADMIN_QUERY_PARAM = "admin";
+const SUPPLY_CALCULATION_VERSION = "supply-model-v1";
+const SUPPLY_PROFILE_POLL_DELAY = 450;
+const SUPPLY_PROFILE_MAX_POLLS = 500;
 
 const AREA_GROUPS = [
-  { id: "59", label: "59타입", min: 55, max: 65, target: 59 },
-  { id: "74", label: "74타입", min: 70, max: 80, target: 74 },
-  { id: "84", label: "84타입", min: 80, max: 90, target: 84 },
-  { id: "101", label: "101타입", min: 95, max: 110, target: 101 },
-  { id: "114", label: "114타입", min: 110, max: 125, target: 114 },
+  { id: "59", label: "59타입", min: 58, max: 60, target: 59, method: "standard" },
+  { id: "74", label: "74타입", min: 73, max: 75, target: 74, method: "standard" },
+  { id: "84", label: "84타입", min: 83, max: 85, target: 84, method: "standard" },
 ];
 
 const RANGE_OPTIONS = [
@@ -62,6 +63,7 @@ const state = {
   searchRequestId: 0,
   favoriteSortable: null,
   comparisonSortable: null,
+  supplyProfileRequests: {},
 };
 
 const el = {
@@ -116,6 +118,7 @@ initialize();
 function initialize() {
   document.documentElement.dataset.appVersion = APP_VERSION;
   document.documentElement.dataset.appUpdatedAt = APP_UPDATED_AT;
+  COMPLEXES.forEach((complex) => applySupplyProfileToTransactions(complex));
   const savedFavoriteCount = state.favorites.length;
   const knownComplexIds = new Set(COMPLEXES.map((complex) => complex.id));
   state.favorites = state.favorites.filter((id) => knownComplexIds.has(id));
@@ -223,12 +226,13 @@ function fillHeaderControls() {
   el.rangeSelect.innerHTML = RANGE_OPTIONS.map(
     (option) => `<option value="${option.id}">${option.label}</option>`
   ).join("");
-  el.headerAreaSelect.innerHTML = AREA_GROUPS.map(
-    (group) => `<option value="${group.id}">${group.label}</option>`
-  ).join("");
 }
 
 function renderHeaderControls() {
+  const groups = getAreaGroupsForControls();
+  el.headerAreaSelect.innerHTML = groups
+    .map((group) => `<option value="${group.id}">${group.label}</option>`)
+    .join("");
   if (el.rangeSelect.value !== state.selectedMonthRange) {
     el.rangeSelect.value = state.selectedMonthRange;
   }
@@ -904,6 +908,11 @@ function createComplexFromKakaoPlace(place) {
     buildingLedgerStatus: "idle",
     buildingLedgerError: "",
     lastBuildingLedgerSync: "",
+    supplyProfileStatus: "idle",
+    supplyProfileProgress: 0,
+    supplyProfileMessage: "공급면적 조회 전",
+    supplyProfile: null,
+    lastSupplyProfileSync: "",
     lotNumber: parseLotNumber(place.address_name || address),
     households: 0,
     builtYear: null,
@@ -960,6 +969,11 @@ function createComplexFromAptListCandidate(candidate) {
     buildingLedgerStatus: "idle",
     buildingLedgerError: "",
     lastBuildingLedgerSync: "",
+    supplyProfileStatus: "idle",
+    supplyProfileProgress: 0,
+    supplyProfileMessage: "공급면적 조회 전",
+    supplyProfile: null,
+    lastSupplyProfileSync: "",
     lotNumber: candidate.lotNumber || parseLotNumber(candidate.jibunAddress || address),
     households: 0,
     builtYear: null,
@@ -1032,6 +1046,11 @@ function refreshPendingFavoriteTrades() {
     .filter((complex) => needsBuildingLedgerInfo(complex))
     .slice(0, 3)
     .forEach((complex) => refreshBuildingLedgerInfoForComplex(complex.id));
+
+  favoriteComplexes
+    .filter((complex) => needsSupplyProfile(complex))
+    .slice(0, 1)
+    .forEach((complex) => refreshSupplyProfileForComplex(complex.id));
 
   favoriteComplexes
     .filter((complex) => !transactionsByComplex[complex.id]?.length)
@@ -1138,6 +1157,14 @@ function needsAptIdentityInfo(complex) {
   );
 }
 
+function needsSupplyProfile(complex) {
+  return (
+    Boolean(complex?.legalDongFullCode) &&
+    !["loading", "ready"].includes(complex.supplyProfileStatus) &&
+    complex.supplyProfile?.calculationVersion !== SUPPLY_CALCULATION_VERSION
+  );
+}
+
 async function refreshRealTransactionsForComplex(complexId) {
   const complex = COMPLEXES.find((item) => item.id === complexId);
   if (!complex) return;
@@ -1181,6 +1208,8 @@ async function refreshRealTransactionsForComplex(complexId) {
         complex.basisInfoError = basisError.message || "국토부 단지 기본정보 조회 실패";
       }
     }
+
+    refreshSupplyProfileForComplex(complex.id);
 
     complex.tradeMessage = "국토부 실거래 조회 중";
     render();
@@ -1542,6 +1571,100 @@ function buildBuildingHubParams(complex) {
   };
 }
 
+async function refreshSupplyProfileForComplex(complexId) {
+  const complex = COMPLEXES.find((item) => item.id === complexId);
+  if (!complex || state.supplyProfileRequests[complexId]) return;
+
+  const params = buildBuildingHubParams(complex);
+  if (!params) {
+    complex.supplyProfileStatus = "empty";
+    complex.supplyProfileMessage = "현재 지번을 확인하지 못했습니다.";
+    saveCustomComplexes();
+    render();
+    return;
+  }
+  if (!shouldUseBackendApi()) {
+    complex.supplyProfileStatus = "idle";
+    complex.supplyProfileMessage = "공급면적 시험은 로컬 RC 서버에서 실행해 주세요.";
+    saveCustomComplexes();
+    render();
+    return;
+  }
+
+  const requestPromise = pollSupplyProfile(complex, params)
+    .catch((error) => {
+      complex.supplyProfileStatus = "error";
+      complex.supplyProfileMessage = error.message || "공급면적 프로필 조회 실패";
+      saveCustomComplexes();
+      render();
+    })
+    .finally(() => {
+      delete state.supplyProfileRequests[complexId];
+    });
+  state.supplyProfileRequests[complexId] = requestPromise;
+  return requestPromise;
+}
+
+async function pollSupplyProfile(complex, params) {
+  complex.supplyProfileStatus = "loading";
+  complex.supplyProfileMessage = "건축HUB 공급면적 준비 중";
+  render();
+
+  for (let poll = 0; poll < SUPPLY_PROFILE_MAX_POLLS; poll += 1) {
+    const response = await fetch(buildSupplyProfileRequestUrl(complex, params));
+    const payload = await response.json().catch(() => ({}));
+    if (payload.status === "ready" && payload.profile) {
+      complex.supplyProfile = payload.profile;
+      complex.supplyProfileStatus = "ready";
+      complex.supplyProfileProgress = 100;
+      complex.supplyProfileMessage =
+        payload.storage === "d1" ? "공용 공급면적 저장 완료" : "시험용 공급면적 캐시 완료";
+      complex.lastSupplyProfileSync = payload.fetchedAt || new Date().toISOString();
+      applySupplyProfileToTransactions(complex);
+      saveCustomComplexes();
+      ensureValidAreaGroup();
+      render();
+      return;
+    }
+
+    if (payload.status === "failed") {
+      throw new Error(payload.error || "건축HUB 공급면적 수집에 실패했습니다.");
+    }
+    if (!response.ok && response.status !== 202) {
+      throw new Error(payload.error || `공급면적 API 응답 오류: ${response.status}`);
+    }
+
+    complex.supplyProfileStatus = "loading";
+    complex.supplyProfileProgress = Number(payload.progress) || 0;
+    complex.supplyProfileMessage = payload.totalPages
+      ? `건축HUB 공급면적 ${payload.progress}% · ${formatNumber(payload.processedUnits || 0)}세대 처리`
+      : "건축HUB 공급면적 자료 확인 중";
+    if (poll % 3 === 0) {
+      saveCustomComplexes();
+      render();
+    }
+    await delay(SUPPLY_PROFILE_POLL_DELAY);
+  }
+  throw new Error("공급면적 수집이 계속 진행 중입니다. 단지를 다시 선택하면 이어서 처리합니다.");
+}
+
+function buildSupplyProfileRequestUrl(complex, params) {
+  const url = new URL("/api/supply-profile", window.location.origin);
+  url.searchParams.set("complexKey", buildSupplyComplexKey(complex, params));
+  url.searchParams.set("sigunguCd", params.sigunguCd);
+  url.searchParams.set("bjdongCd", params.bjdongCd);
+  url.searchParams.set("platGbCd", params.platGbCd);
+  url.searchParams.set("bun", params.bun);
+  url.searchParams.set("ji", params.ji);
+  url.searchParams.set("batchSize", "5");
+  return url.toString();
+}
+
+function buildSupplyComplexKey(complex, params) {
+  if (complex.kaptCode) return `kapt:${complex.kaptCode}`;
+  return `lot:${params.sigunguCd}${params.bjdongCd}:${params.platGbCd}:${params.bun}:${params.ji}`;
+}
+
 function parseLotNumberParts(value) {
   const text = String(value || "").replace(/[^\d-]/g, "");
   if (!text) return null;
@@ -1670,19 +1793,86 @@ function rtmsItemToTransaction(complex, item, index) {
   const month = `${item.dealYear}-${String(item.dealMonth).padStart(2, "0")}`;
   const date = `${month}-${String(item.dealDay).padStart(2, "0")}`;
   const priceEok = roundTo(dealAmountManwon / 10000, 2);
-  return {
+  const transaction = {
     id: `${complex.id}-rtms-${date}-${index}`,
     complexId: complex.id,
+    source: "rtms",
     month,
     date,
     area,
     areaGroupId: getAreaGroupId(area),
     floor: Number(item.floor) || 0,
     priceEok,
-    ppy: Math.round(dealAmountManwon / (area / 3.3058)),
+    dealAmountManwon,
+    aptDong: item.aptDong || "",
+    exclusivePpy: Math.round(dealAmountManwon / (area / 3.305785)),
+    ppy: null,
+    ppyBasis: "pending",
     aptNm: item.aptNm,
     jibun: item.jibun,
   };
+  applySupplyProfileToTransaction(complex, transaction);
+  return transaction;
+}
+
+function applySupplyProfileToTransactions(complex) {
+  const transactions = transactionsByComplex[complex.id] || [];
+  transactions.forEach((transaction) => applySupplyProfileToTransaction(complex, transaction));
+  complex.realTransactions = transactions;
+}
+
+function applySupplyProfileToTransaction(complex, transaction) {
+  const group = findSupplyGroupForArea(complex.supplyProfile, transaction.area);
+  if (!group) {
+    transaction.areaGroupId = getAreaGroupId(transaction.area);
+    transaction.ppy = null;
+    transaction.ppyBasis = complex.supplyProfileStatus === "ready" ? "unmatched" : "pending";
+    transaction.supplyArea = null;
+    return transaction;
+  }
+
+  const normalizedDong = normalizeBuildingDong(transaction.aptDong);
+  const dongFactor = normalizedDong ? group.dongFactors?.[normalizedDong] : null;
+  const factor = Number(dongFactor?.factor || group.factor);
+  const dealAmountManwon =
+    Number(transaction.dealAmountManwon) || Number(transaction.priceEok) * 10000;
+  transaction.areaGroupId = group.id;
+  transaction.ppy = Number.isFinite(factor) && factor > 0
+    ? Math.round(dealAmountManwon * factor)
+    : null;
+  transaction.ppyBasis = dongFactor ? "supply-dong-weighted" : "supply-complex-weighted";
+  transaction.supplyArea = Number(group.representativeSupplyArea) || null;
+  transaction.supplyPyeong = Number(group.representativeSupplyPyeong) || null;
+  return transaction;
+}
+
+function findSupplyGroupForArea(profile, exclusiveArea) {
+  const area = Number(exclusiveArea);
+  if (!Number.isFinite(area) || !profile?.groups?.length) return null;
+  const standard = profile.groups.find(
+    (group) => group.method === "standard" && area >= group.exclusiveMin && area < group.exclusiveMax
+  );
+  if (standard) return standard;
+
+  let best = null;
+  let bestDifference = Number.POSITIVE_INFINITY;
+  profile.groups.forEach((group) => {
+    (group.exclusiveValues || []).forEach((value) => {
+      const difference = Math.abs(area - Number(value));
+      if (difference < bestDifference) {
+        best = group;
+        bestDifference = difference;
+      }
+    });
+  });
+  return bestDifference <= 0.25 ? best : null;
+}
+
+function normalizeBuildingDong(value) {
+  return normalize(value)
+    .replace(/제/g, "")
+    .replace(/동$/g, "")
+    .replace(/^0+/, "");
 }
 
 function normalizeApartmentName(value) {
@@ -1995,18 +2185,17 @@ function renderMap(options = {}) {
 }
 
 function renderGlobalAreaTabs() {
-  const ids = getAreaGroupsFromFavorites();
-  el.globalAreaTabs.innerHTML = ids
-    .map((id) => {
-      const group = getAreaGroupMeta(id);
-      const isActive = state.selectedAreaGroupId === id;
+  const groups = getAreaGroupsFromFavorites();
+  el.globalAreaTabs.innerHTML = groups
+    .map((group) => {
+      const isActive = state.selectedAreaGroupId === group.id;
       return `
         <button
           class="area-tab ${isActive ? "active" : ""}"
           type="button"
           role="tab"
           aria-selected="${isActive}"
-          data-global-area="${id}"
+          data-global-area="${group.id}"
         >
           ${group.label}
         </button>
@@ -2058,7 +2247,7 @@ function renderDetail() {
   `;
 
   renderAreaTabs(complex.id);
-  renderMetrics(metrics, scopedTransactions);
+  renderMetrics(metrics, scopedTransactions, complex);
   renderPeriodAnalysis(areaGroupTransactions);
   renderChart(scopedTransactions);
   renderTransactions(scopedTransactions);
@@ -2085,8 +2274,9 @@ function renderEmptyDetail() {
 function renderAreaTabs(complexId) {
   const transactions = complexId ? filterTransactionsBySelectedRange(transactionsByComplex[complexId] || []) : [];
   const counts = countBy(transactions, "areaGroupId");
+  const groups = complexId ? getAvailableAreaGroupMetas(complexId) : getAreaGroupsForControls();
 
-  el.areaTabs.innerHTML = AREA_GROUPS
+  el.areaTabs.innerHTML = groups
     .map((group) => {
       const id = group.id;
       const count = counts[id] || 0;
@@ -2116,7 +2306,7 @@ function renderAreaTabs(complexId) {
   });
 }
 
-function renderMetrics(metrics, scopedTransactions) {
+function renderMetrics(metrics, scopedTransactions, complex) {
   const dataQuality = scopedTransactions.length >= 12 ? "추세 참고 가능" : scopedTransactions.length >= 5 ? "거래수 보통" : "데이터 부족";
   const trendClass = metrics.changePercent >= 0 ? "trend-up" : "trend-down";
   const trendPrefix = metrics.changePercent >= 0 ? "+" : "";
@@ -2139,9 +2329,9 @@ function renderMetrics(metrics, scopedTransactions) {
       <small>월별 거래수 부족 시 함께 확인 필요</small>
     </div>
     <div class="metric-card">
-      <span>전용면적 평당가</span>
-      <strong>${metrics.latest ? `${formatNumber(metrics.latest.ppy)}만원` : "-"}</strong>
-      <small>최근 실거래 기준, 전용면적 환산</small>
+      <span>공급평당가</span>
+      <strong>${metrics.latest?.ppy ? `${formatNumber(metrics.latest.ppy)}만원` : "-"}</strong>
+      <small>${formatSupplyProfileMessage(complex, metrics.latest)}</small>
     </div>
     <div class="metric-card">
       <span>${range.months}개월 변화</span>
@@ -2175,7 +2365,7 @@ function renderPeriodAnalysis(areaGroupTransactions) {
         ${analysis.periods.map((period) => `<strong>${period.avgPriceEok ? formatEok(period.avgPriceEok) : "-"}</strong>`).join("")}
       </div>
       <div class="period-row" role="row">
-        <span role="rowheader">평당가</span>
+        <span role="rowheader">공급평당가</span>
         ${analysis.periods.map((period) => `<strong>${period.avgPpy ? `${formatNumber(period.avgPpy)}만/평` : "-"}</strong>`).join("")}
       </div>
       <div class="period-row" role="row">
@@ -2304,7 +2494,7 @@ function renderTransactions(scopedTransactions) {
           </div>
           <div class="transaction-price">
             <strong>${formatEok(tx.priceEok)}</strong>
-            <span>${formatNumber(tx.ppy)}만원/평</span>
+            <span>${tx.ppy ? `${formatNumber(tx.ppy)}만원/평` : "공급면적 계산 중"}</span>
           </div>
         </article>
       `
@@ -2336,7 +2526,7 @@ function renderComparison() {
       <span>순번</span>
       <span>단지</span>
       <span>최근가</span>
-      <span>평당가</span>
+      <span>공급평당가</span>
       <span>거래수</span>
       <span>관리</span>
     </div>
@@ -2363,8 +2553,8 @@ function renderComparison() {
                 <small>${metrics.latest ? metrics.latest.date.slice(5) : complex.tradeStatus === "loading" ? "조회 중" : "거래 없음"}</small>
               </span>
               <span class="compare-cell">
-                <strong>${metrics.latest ? `${formatNumber(metrics.latest.ppy)}만` : "-"}</strong>
-                <small>전용 환산</small>
+                <strong>${metrics.latest?.ppy ? `${formatNumber(metrics.latest.ppy)}만` : "-"}</strong>
+                <small>${formatSupplyProfileShortStatus(complex, metrics.latest)}</small>
               </span>
               <span class="compare-cell">
                 <strong>${txs.length}건</strong>
@@ -2439,8 +2629,12 @@ function toggleFavorite(id) {
 }
 
 function ensureValidAreaGroup() {
-  if (!AREA_GROUPS.some((group) => group.id === state.selectedAreaGroupId)) {
-    state.selectedAreaGroupId = "84";
+  const groups = getAreaGroupsForControls();
+  if (!groups.some((group) => group.id === state.selectedAreaGroupId)) {
+    state.selectedAreaGroupId =
+      groups.find((group) => group.id === "84")?.id ||
+      groups.slice().sort((a, b) => Math.abs(a.target - 84) - Math.abs(b.target - 84))[0]?.id ||
+      "84";
   }
   if (!RANGE_OPTIONS.some((option) => option.id === state.selectedMonthRange)) {
     state.selectedMonthRange = "24";
@@ -2559,21 +2753,79 @@ function isUserRegisteredSource(source) {
 }
 
 function getAvailableAreaGroups(complexId) {
-  const counts = countBy(transactionsByComplex[complexId] || [], "areaGroupId");
-  return AREA_GROUPS.map((group) => group.id).filter((id) => counts[id] > 0);
+  return getAvailableAreaGroupMetas(complexId).map((group) => group.id);
 }
 
 function getAreaGroupsFromFavorites() {
-  return AREA_GROUPS.map((group) => group.id);
+  const groups = new Map();
+  getFavoriteComplexes().forEach((complex) => {
+    getAvailableAreaGroupMetas(complex.id).forEach((group) => groups.set(group.id, group));
+  });
+  if (!groups.size) {
+    AREA_GROUPS.forEach((group) => groups.set(group.id, group));
+  }
+  return Array.from(groups.values()).sort((a, b) => a.target - b.target);
 }
 
 function getAreaGroupMeta(id) {
-  return AREA_GROUPS.find((group) => group.id === id) || AREA_GROUPS[0];
+  const runtimeGroup = COMPLEXES
+    .flatMap((complex) => getAvailableAreaGroupMetas(complex.id))
+    .find((group) => group.id === id);
+  return runtimeGroup || AREA_GROUPS.find((group) => group.id === id) || {
+    id,
+    label: `${String(id).replace(/^dynamic-/, "").replace(/-/g, "·")}타입`,
+    min: 0,
+    max: Number.POSITIVE_INFINITY,
+    target: Number(String(id).match(/\d+/)?.[0]) || 84,
+    method: "dynamic",
+  };
 }
 
 function getAreaGroupId(area) {
   const group = AREA_GROUPS.find((item) => area >= item.min && area < item.max);
-  return group ? group.id : "etc";
+  if (group) return group.id;
+  const label = Math.max(1, Math.floor(Number(area) + 0.000001));
+  return `dynamic-${label}-${label}`;
+}
+
+function getAvailableAreaGroupMetas(complexId) {
+  const complex = COMPLEXES.find((item) => item.id === complexId);
+  if (complex?.supplyProfile?.calculationVersion === SUPPLY_CALCULATION_VERSION) {
+    return complex.supplyProfile.groups.map((group) => ({
+      ...group,
+      min: group.exclusiveMin,
+      max: group.exclusiveMax,
+      target: group.targetExclusiveArea,
+    }));
+  }
+
+  const ids = Array.from(
+    new Set((transactionsByComplex[complexId] || []).map((transaction) => transaction.areaGroupId))
+  );
+  const groups = ids.map((id) => getFallbackAreaGroupMeta(id));
+  return groups.length ? groups.sort((a, b) => a.target - b.target) : AREA_GROUPS;
+}
+
+function getFallbackAreaGroupMeta(id) {
+  const standard = AREA_GROUPS.find((group) => group.id === id);
+  if (standard) return standard;
+  const values = String(id).match(/\d+/g)?.map(Number) || [84];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  return {
+    id,
+    label: min === max ? `${min}타입` : `${min}·${max}타입`,
+    min,
+    max: max + 1,
+    target: (min + max) / 2,
+    method: "dynamic",
+  };
+}
+
+function getAreaGroupsForControls() {
+  const selected = getSelectedComplex();
+  if (selected) return getAvailableAreaGroupMetas(selected.id);
+  return getAreaGroupsFromFavorites();
 }
 
 function buildTransactions(complex) {
@@ -2701,8 +2953,7 @@ function addMonthsClamped(date, monthOffset) {
 
 function getTransactionPpy(tx) {
   if (Number.isFinite(tx.ppy)) return Number(tx.ppy);
-  const areaPyung = Number(tx.area) / 3.3058;
-  return areaPyung > 0 && Number.isFinite(tx.priceEok) ? (tx.priceEok * 10000) / areaPyung : NaN;
+  return NaN;
 }
 
 function buildChartXTicks(monthly, months) {
@@ -2785,6 +3036,34 @@ function formatEok(value) {
 
 function formatNumber(value) {
   return Math.round(value).toLocaleString("ko-KR");
+}
+
+function formatSupplyProfileMessage(complex, transaction) {
+  if (transaction?.ppyBasis === "supply-dong-weighted") {
+    return "최근 실거래 기준, 해당 동 세대수 가중";
+  }
+  if (transaction?.ppyBasis === "supply-complex-weighted") {
+    return "최근 실거래 기준, 단지 전체 세대수 가중";
+  }
+  if (complex?.supplyProfileStatus === "loading") {
+    return complex.supplyProfileMessage || "건축HUB 공급면적 계산 중";
+  }
+  if (complex?.supplyProfileStatus === "error") {
+    return complex.supplyProfileMessage || "공급면적 조회 실패";
+  }
+  return "공급면적 프로필 준비 전";
+}
+
+function formatSupplyProfileShortStatus(complex, transaction) {
+  if (transaction?.ppyBasis === "supply-dong-weighted") return "동 기준 가중";
+  if (transaction?.ppyBasis === "supply-complex-weighted") return "단지 가중";
+  if (complex?.supplyProfileStatus === "loading") return `${complex.supplyProfileProgress || 0}% 처리`;
+  if (complex?.supplyProfileStatus === "error") return "조회 실패";
+  return "계산 전";
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function formatHouseholds(value) {
@@ -2931,6 +3210,17 @@ function loadCustomComplexes() {
         buildingLedgerStatus: complex.buildingLedgerStatus || "idle",
         buildingLedgerError: complex.buildingLedgerError || "",
         lastBuildingLedgerSync: complex.lastBuildingLedgerSync || "",
+        supplyProfileStatus:
+          complex.supplyProfile?.calculationVersion === SUPPLY_CALCULATION_VERSION
+            ? complex.supplyProfileStatus || "ready"
+            : "idle",
+        supplyProfileProgress: Number(complex.supplyProfileProgress) || 0,
+        supplyProfileMessage: complex.supplyProfileMessage || "공급면적 조회 전",
+        supplyProfile:
+          complex.supplyProfile?.calculationVersion === SUPPLY_CALCULATION_VERSION
+            ? complex.supplyProfile
+            : null,
+        lastSupplyProfileSync: complex.lastSupplyProfileSync || "",
         lastBasisSync: complex.lastBasisSync || "",
         realTransactions: Array.isArray(complex.realTransactions) ? complex.realTransactions : [],
         tradeStatus:

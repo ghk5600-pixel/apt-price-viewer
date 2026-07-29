@@ -42,6 +42,7 @@ export function assertRequired(params) {
 export async function fetchJsonApi(url) {
   const response = await fetch(url.toString(), {
     headers: { accept: "application/json, text/plain, */*" },
+    signal: AbortSignal.timeout(30000),
   });
   if (!response.ok) {
     throw new Error(`MOLIT API responded with ${response.status}.`);
