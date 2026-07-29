@@ -133,5 +133,5 @@ http://localhost:8080
 
 ```text
 start-rc-local.cmd
-http://127.0.0.1:8788/?apiProxy=1
+http://127.0.0.1:8080/?apiProxy=1
 ```
