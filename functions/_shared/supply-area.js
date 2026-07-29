@@ -1,4 +1,4 @@
-export const SUPPLY_CALCULATION_VERSION = "supply-model-v1";
+export const SUPPLY_CALCULATION_VERSION = "supply-model-v2";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 
 export const STANDARD_AREA_GROUPS = [
@@ -122,6 +122,7 @@ export function buildSupplyProfile({
   complexKey,
   source,
   collectionState,
+  expectedHouseholds = null,
   calculatedAt = new Date().toISOString(),
 }) {
   const state = normalizeCollectionState(collectionState);
@@ -134,7 +135,7 @@ export function buildSupplyProfile({
     .filter(Boolean)
     .sort((a, b) => a.targetExclusiveArea - b.targetExclusiveArea);
 
-  return {
+  const profile = {
     complexKey,
     calculationVersion: SUPPLY_CALCULATION_VERSION,
     calculatedAt,
@@ -144,6 +145,48 @@ export function buildSupplyProfile({
     processedRows: state.processedRows,
     skippedUnits: state.skippedUnits,
     groups,
+  };
+  profile.householdValidation = buildHouseholdValidation({
+    expectedHouseholds,
+    profileUnitCount: profile.unitCount,
+    processedUnits: state.processedUnits,
+    skippedUnits: state.skippedUnits,
+  });
+  return profile;
+}
+
+export function buildHouseholdValidation({
+  expectedHouseholds,
+  profileUnitCount,
+  processedUnits = 0,
+  skippedUnits = 0,
+}) {
+  const expected = positiveInteger(expectedHouseholds);
+  const collected = Math.max(0, Math.round(Number(profileUnitCount) || 0));
+  const observed = Math.max(
+    collected,
+    Math.round(Number(processedUnits) || 0) + Math.round(Number(skippedUnits) || 0)
+  );
+
+  if (!expected) {
+    return {
+      status: "unavailable",
+      expectedHouseholds: null,
+      collectedHouseholds: collected,
+      observedLedgerUnits: observed,
+      difference: null,
+      coverageRate: null,
+    };
+  }
+
+  const difference = collected - expected;
+  return {
+    status: difference === 0 ? "matched" : "mismatch",
+    expectedHouseholds: expected,
+    collectedHouseholds: collected,
+    observedLedgerUnits: observed,
+    difference,
+    coverageRate: round(collected / expected, 6),
   };
 }
 
@@ -445,4 +488,9 @@ function toArea(value) {
 function round(value, digits) {
   const factor = 10 ** digits;
   return Math.round((Number(value) + Number.EPSILON) * factor) / factor;
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : null;
 }

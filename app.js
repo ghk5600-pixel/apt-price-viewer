@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.07.29-01-rc.1";
+const APP_VERSION = "v2026.07.29-01-rc.2";
 const APP_UPDATED_AT = "2026-07-29";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
@@ -17,7 +17,7 @@ const BUILDING_HUB_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
 const DEFAULT_KAKAO_JAVASCRIPT_KEY = "f1381fcba950abff23056942bd19d544";
 const ADMIN_QUERY_PARAM = "admin";
-const SUPPLY_CALCULATION_VERSION = "supply-model-v1";
+const SUPPLY_CALCULATION_VERSION = "supply-model-v2";
 const SUPPLY_PROFILE_POLL_DELAY = 450;
 const SUPPLY_PROFILE_MAX_POLLS = 500;
 
@@ -1606,19 +1606,19 @@ async function refreshSupplyProfileForComplex(complexId) {
 }
 
 async function pollSupplyProfile(complex, params) {
+  const retryFailedPage = complex.supplyProfileStatus === "error";
   complex.supplyProfileStatus = "loading";
   complex.supplyProfileMessage = "건축HUB 공급면적 준비 중";
   render();
 
   for (let poll = 0; poll < SUPPLY_PROFILE_MAX_POLLS; poll += 1) {
-    const response = await fetch(buildSupplyProfileRequestUrl(complex, params));
+    const response = await fetch(buildSupplyProfileRequestUrl(complex, params, retryFailedPage));
     const payload = await response.json().catch(() => ({}));
     if (payload.status === "ready" && payload.profile) {
       complex.supplyProfile = payload.profile;
       complex.supplyProfileStatus = "ready";
       complex.supplyProfileProgress = 100;
-      complex.supplyProfileMessage =
-        payload.storage === "d1" ? "공용 공급면적 저장 완료" : "시험용 공급면적 캐시 완료";
+      complex.supplyProfileMessage = formatSupplyProfileReadyMessage(payload);
       complex.lastSupplyProfileSync = payload.fetchedAt || new Date().toISOString();
       applySupplyProfileToTransactions(complex);
       saveCustomComplexes();
@@ -1636,8 +1636,12 @@ async function pollSupplyProfile(complex, params) {
 
     complex.supplyProfileStatus = "loading";
     complex.supplyProfileProgress = Number(payload.progress) || 0;
+    const expectedHouseholds = Number(payload.expectedHouseholds) || Number(complex.households) || 0;
+    const householdProgress = expectedHouseholds
+      ? `${formatNumber(payload.processedUnits || 0)}/${formatNumber(expectedHouseholds)}세대`
+      : `${formatNumber(payload.processedUnits || 0)}세대`;
     complex.supplyProfileMessage = payload.totalPages
-      ? `건축HUB 공급면적 ${payload.progress}% · ${formatNumber(payload.processedUnits || 0)}세대 처리`
+      ? `건축HUB ${payload.currentPage || payload.completedPages + 1}/${payload.totalPages}페이지 · ${householdProgress} 처리`
       : "건축HUB 공급면적 자료 확인 중";
     if (poll % 3 === 0) {
       saveCustomComplexes();
@@ -1648,7 +1652,7 @@ async function pollSupplyProfile(complex, params) {
   throw new Error("공급면적 수집이 계속 진행 중입니다. 단지를 다시 선택하면 이어서 처리합니다.");
 }
 
-function buildSupplyProfileRequestUrl(complex, params) {
+function buildSupplyProfileRequestUrl(complex, params, retryFailedPage = false) {
   const url = new URL("/api/supply-profile", window.location.origin);
   url.searchParams.set("complexKey", buildSupplyComplexKey(complex, params));
   url.searchParams.set("sigunguCd", params.sigunguCd);
@@ -1656,8 +1660,29 @@ function buildSupplyProfileRequestUrl(complex, params) {
   url.searchParams.set("platGbCd", params.platGbCd);
   url.searchParams.set("bun", params.bun);
   url.searchParams.set("ji", params.ji);
-  url.searchParams.set("batchSize", "5");
+  if (Number(complex.households) > 0) {
+    url.searchParams.set("expectedHouseholds", String(Math.round(Number(complex.households))));
+  }
+  if (retryFailedPage) {
+    url.searchParams.set("retry", "1");
+  }
   return url.toString();
+}
+
+function formatSupplyProfileReadyMessage(payload) {
+  const storageMessage =
+    payload.storage === "d1" ? "D1 공급면적 저장 완료" : "시험용 공급면적 캐시 완료";
+  const validation = payload.validation || payload.profile?.householdValidation;
+  const expected = Number(validation?.expectedHouseholds) || 0;
+  const collected = Number(validation?.collectedHouseholds) || 0;
+  if (!expected) return storageMessage;
+  if (validation.status === "matched") {
+    return `${storageMessage} · ${formatNumber(collected)}/${formatNumber(expected)}세대 검증`;
+  }
+  const difference = Math.abs(Number(validation?.difference) || collected - expected);
+  return `${storageMessage} · ${formatNumber(collected)}/${formatNumber(expected)}세대 수집 · ${formatNumber(
+    difference
+  )}세대 차이`;
 }
 
 function buildSupplyComplexKey(complex, params) {
@@ -3058,7 +3083,10 @@ function formatSupplyProfileShortStatus(complex, transaction) {
   if (transaction?.ppyBasis === "supply-dong-weighted") return "동 기준 가중";
   if (transaction?.ppyBasis === "supply-complex-weighted") return "단지 가중";
   if (complex?.supplyProfileStatus === "loading") return `${complex.supplyProfileProgress || 0}% 처리`;
-  if (complex?.supplyProfileStatus === "error") return "조회 실패";
+  if (complex?.supplyProfileStatus === "error") {
+    const failedPage = String(complex.supplyProfileMessage || "").match(/(\d+)페이지/);
+    return failedPage ? `${failedPage[1]}페이지 실패` : "조회 실패";
+  }
   return "계산 전";
 }
 

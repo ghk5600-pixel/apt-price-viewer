@@ -79,6 +79,27 @@ Workers & Pages
 요청에서 동일한 테이블이 없으면 자동 생성합니다. Preview에 D1이 아직 연결되지
 않은 경우 RC는 엣지 캐시로 시험 동작하지만, 영구 공용 저장 검증에는 D1이 필요합니다.
 
+Preview와 Production은 바인딩이 서로 분리되어 있습니다. RC 시험 주소에서는
+`Choose Environment: Preview`를 선택한 상태에서 `SUPPLY_DB`를 연결해야 합니다.
+배포 후 아래 주소를 열어 저장소 상태를 확인합니다.
+
+```text
+https://<Preview 주소>/api/debug-env
+```
+
+정상적인 D1 연결 응답에는 아래 값이 포함됩니다.
+
+```json
+{
+  "hasSupplyDb": true,
+  "supplyStorage": "d1"
+}
+```
+
+`hasSupplyDb`가 `false`이면 해당 배포는 영구 D1이 아니라 엣지 캐시를 사용합니다.
+바인딩을 추가하거나 변경한 뒤에는 새 커밋을 배포하거나 기존 Preview 배포를 다시
+시도해야 새 Functions 인스턴스에 바인딩이 적용됩니다.
+
 ## Cloudflare Build 설정
 
 `wrangler.toml`은 이 프로젝트에서 사용하지 않습니다. Pages 설정은 Cloudflare
