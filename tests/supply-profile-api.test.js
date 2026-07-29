@@ -2,13 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { onRequestGet } from "../functions/api/supply-profile.js";
 
-test("첫 페이지부터 한 페이지씩 순차 저장하고 K-apt 세대수를 검증한다", async () => {
+test("1000행 페이지를 우선 선택하고 한 페이지씩 순차 저장한다", async () => {
   const originalFetch = globalThis.fetch;
-  const requestedPages = [];
+  const requests = [];
   globalThis.__supplyProfileRecords = new Map();
   globalThis.fetch = async (url) => {
-    const pageNo = Number(new URL(url).searchParams.get("pageNo"));
-    requestedPages.push(pageNo);
+    const parsed = new URL(url);
+    const pageNo = Number(parsed.searchParams.get("pageNo"));
+    const numOfRows = Number(parsed.searchParams.get("numOfRows"));
+    requests.push({ pageNo, numOfRows });
     const items =
       pageNo === 1
         ? [
@@ -17,103 +19,168 @@ test("첫 페이지부터 한 페이지씩 순차 저장하고 K-apt 세대수�
             row("unit-api-2", "전유", 84.95, "아파트"),
           ]
         : [row("unit-api-2", "공용", 26.77, "계단실")];
-    return successResponse(items, 101);
+    return successResponse(items, 1001, numOfRows);
   };
 
   try {
-    const url = requestUrl("sequential-complex", { expectedHouseholds: 2 });
+    const url = requestUrl("sequential-1000-complex", { expectedHouseholds: 2 });
     const first = await callApi(url);
     assert.equal(first.response.status, 202);
     assert.equal(first.payload.status, "building");
+    assert.equal(first.payload.pageSize, 1000);
+    assert.equal(first.payload.totalPages, 2);
     assert.equal(first.payload.completedPages, 1);
-    assert.equal(first.payload.currentPage, 2);
-    assert.deepEqual(requestedPages, [1]);
+    assert.deepEqual(requests, [{ pageNo: 1, numOfRows: 1000 }]);
 
     const second = await callApi(url);
     assert.equal(second.response.status, 200);
     assert.equal(second.payload.status, "ready");
-    assert.equal(second.payload.storage, "memory");
     assert.equal(second.payload.profile.unitCount, 2);
     assert.equal(second.payload.profile.groups[0].id, "84");
+    assert.equal(second.payload.profile.collection.pageSize, 1000);
     assert.equal(second.payload.validation.status, "matched");
-    assert.equal(second.payload.validation.expectedHouseholds, 2);
-    assert.deepEqual(requestedPages, [1, 2]);
+    assert.deepEqual(requests, [
+      { pageNo: 1, numOfRows: 1000 },
+      { pageNo: 2, numOfRows: 1000 },
+    ]);
+
+    const cached = await callApi(url);
+    assert.equal(cached.payload.status, "ready");
+    assert.equal(cached.payload.profile.collection.pageSize, 1000);
+    assert.equal(requests.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("같은 페이지의 일시적 오류를 자동 재시도한 뒤 성공한다", async () => {
+test("1000행 요청이 실패하면 500행으로 자동 하향한다", async () => {
   const originalFetch = globalThis.fetch;
-  let attempts = 0;
+  const requestedSizes = [];
   globalThis.__supplyProfileRecords = new Map();
-  globalThis.fetch = async () => {
-    attempts += 1;
-    if (attempts < 3) {
-      return errorResponse(500, "99", "일시적인 건축HUB 내부 오류");
+  globalThis.fetch = async (url) => {
+    const numOfRows = Number(new URL(url).searchParams.get("numOfRows"));
+    requestedSizes.push(numOfRows);
+    if (numOfRows === 1000) {
+      return errorResponse(500, "99", "큰 페이지 요청 처리 실패");
     }
     return successResponse([
-      row("retry-unit", "전유", 84.95, "아파트"),
-      row("retry-unit", "공용", 26.77, "계단실"),
-    ]);
+      row("fallback-unit", "전유", 84.95, "아파트"),
+      row("fallback-unit", "공용", 26.77, "계단실"),
+    ], 2, numOfRows);
   };
 
   try {
     const { response, payload } = await callApi(
-      requestUrl("retry-success-complex", { expectedHouseholds: 1 })
+      requestUrl("page-size-fallback-complex", { expectedHouseholds: 1 })
     );
     assert.equal(response.status, 200);
     assert.equal(payload.status, "ready");
-    assert.equal(payload.validation.status, "matched");
-    assert.equal(attempts, 3);
+    assert.equal(payload.profile.collection.pageSize, 500);
+    assert.deepEqual(requestedSizes, [1000, 500]);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("성공한 페이지를 보존하고 실패 페이지부터 이어서 수집한다", async () => {
+test("HTTP 500을 장기 대기로 저장하고 F5 상황에서도 실패 페이지부터 자동 재개한다", async () => {
   const originalFetch = globalThis.fetch;
   const requestedPages = [];
   let allowSecondPage = false;
   globalThis.__supplyProfileRecords = new Map();
   globalThis.fetch = async (url) => {
-    const pageNo = Number(new URL(url).searchParams.get("pageNo"));
+    const parsed = new URL(url);
+    const pageNo = Number(parsed.searchParams.get("pageNo"));
+    const numOfRows = Number(parsed.searchParams.get("numOfRows"));
     requestedPages.push(pageNo);
     if (pageNo === 2 && !allowSecondPage) {
       return errorResponse(500, "99", "두 번째 페이지 임시 장애");
     }
     if (pageNo === 1) {
       return successResponse([
-        row("checkpoint-unit-1", "전유", 84.95, "아파트"),
-        row("checkpoint-unit-1", "공용", 27.9, "벽체"),
-        row("checkpoint-unit-2", "전유", 84.95, "아파트"),
-      ], 101);
+        row("resume-unit-1", "전유", 84.95, "아파트"),
+        row("resume-unit-1", "공용", 27.9, "벽체"),
+        row("resume-unit-2", "전유", 84.95, "아파트"),
+      ], 1001, numOfRows);
     }
-    return successResponse([row("checkpoint-unit-2", "공용", 26.77, "계단실")], 101);
+    return successResponse([row("resume-unit-2", "공용", 26.77, "계단실")], 1001, numOfRows);
   };
 
   try {
-    const baseUrl = requestUrl("checkpoint-complex", { expectedHouseholds: 2 });
-    const first = await callApi(baseUrl);
+    const url = requestUrl("automatic-resume-complex", { expectedHouseholds: 2 });
+    const first = await callApi(url);
     assert.equal(first.payload.completedPages, 1);
 
-    const failed = await callApi(baseUrl);
-    assert.equal(failed.response.status, 502);
-    assert.equal(failed.payload.status, "failed");
-    assert.equal(failed.payload.completedPages, 1);
-    assert.equal(failed.payload.failedPage, 2);
-    assert.equal(failed.payload.errorDetails.pageNo, 2);
-    assert.equal(failed.payload.errorDetails.attempts, 4);
-    assert.equal(failed.payload.errorDetails.upstreamStatus, 500);
-    assert.equal(failed.payload.errorDetails.resultMessage, "두 번째 페이지 임시 장애");
+    const paused = await callApi(url);
+    assert.equal(paused.response.status, 202);
+    assert.equal(paused.payload.status, "paused");
+    assert.equal(paused.payload.completedPages, 1);
+    assert.equal(paused.payload.failedPage, 2);
+    assert.equal(paused.payload.errorDetails.upstreamStatus, 500);
+    assert.ok(paused.payload.retryAfterMs >= 4_000);
 
+    const waiting = await callApi(url);
+    assert.equal(waiting.payload.status, "paused");
+    assert.deepEqual(requestedPages, [1, 2]);
+
+    const storedRecord = globalThis.__supplyProfileRecords.get("automatic-resume-complex");
+    storedRecord.nextRetryAt = new Date(Date.now() - 1_000).toISOString();
     allowSecondPage = true;
-    const resumed = await callApi(`${baseUrl}&retry=1`);
+
+    const resumed = await callApi(url);
     assert.equal(resumed.response.status, 200);
     assert.equal(resumed.payload.status, "ready");
     assert.equal(resumed.payload.profile.unitCount, 2);
     assert.equal(resumed.payload.validation.status, "matched");
-    assert.deepEqual(requestedPages, [1, 2, 2, 2, 2, 2]);
+    assert.deepEqual(requestedPages, [1, 2, 2]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("같은 페이지가 반복 실패하면 처리 위치를 유지하고 페이지 크기를 낮춘다", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    const pageNo = Number(parsed.searchParams.get("pageNo"));
+    const numOfRows = Number(parsed.searchParams.get("numOfRows"));
+    requests.push({ pageNo, numOfRows });
+    if (pageNo === 1) {
+      return successResponse([
+        row("downgrade-unit-1", "전유", 84.95, "아파트"),
+        row("downgrade-unit-1", "공용", 27.9, "벽체"),
+        row("downgrade-unit-2", "전유", 84.95, "아파트"),
+      ], 2001, numOfRows);
+    }
+    return errorResponse(500, "99", "큰 페이지 반복 장애");
+  };
+
+  try {
+    const url = requestUrl("page-size-downgrade-complex");
+    await callApi(url);
+
+    for (let failure = 0; failure < 3; failure += 1) {
+      const result = await callApi(url);
+      assert.equal(result.payload.status, "paused");
+      if (failure < 2) {
+        const record = globalThis.__supplyProfileRecords.get("page-size-downgrade-complex");
+        record.nextRetryAt = new Date(Date.now() - 1_000).toISOString();
+      } else {
+        assert.equal(result.payload.pageSize, 500);
+        assert.equal(result.payload.currentPage, 3);
+        assert.equal(result.payload.totalPages, 5);
+        assert.equal(result.payload.errorDetails.pageSizeDowngradedFrom, 1000);
+        assert.equal(result.payload.errorDetails.pageSizeDowngradedTo, 500);
+      }
+    }
+
+    assert.deepEqual(requests, [
+      { pageNo: 1, numOfRows: 1000 },
+      { pageNo: 2, numOfRows: 1000 },
+      { pageNo: 2, numOfRows: 1000 },
+      { pageNo: 2, numOfRows: 1000 },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -122,11 +189,13 @@ test("성공한 페이지를 보존하고 실패 페이지부터 이어서 수�
 test("K-apt 세대수와 수집 세대수 차이를 경고 정보로 반환한다", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.__supplyProfileRecords = new Map();
-  globalThis.fetch = async () =>
-    successResponse([
+  globalThis.fetch = async (url) => {
+    const numOfRows = Number(new URL(url).searchParams.get("numOfRows"));
+    return successResponse([
       row("mismatch-unit", "전유", 84.95, "아파트"),
       row("mismatch-unit", "공용", 26.77, "계단실"),
-    ]);
+    ], 2, numOfRows);
+  };
 
   try {
     const { response, payload } = await callApi(
@@ -165,12 +234,12 @@ async function callApi(url) {
   return { response, payload: await response.json() };
 }
 
-function successResponse(items, totalCount = items.length) {
+function successResponse(items, totalCount = items.length, numOfRows = 1000) {
   return new Response(
     JSON.stringify({
       response: {
         header: { resultCode: "00", resultMsg: "OK" },
-        body: { items: { item: items }, totalCount },
+        body: { items: { item: items }, totalCount, numOfRows },
       },
     }),
     { status: 200, headers: { "content-type": "application/json" } }

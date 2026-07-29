@@ -17,11 +17,11 @@ import {
 import { createSupplyProfileStore } from "../_shared/supply-store.js";
 
 const BUILDING_AREA_OPERATION = "getBrExposPubuseAreaInfo";
-const PAGE_SIZE = 100;
+const COLLECTION_PROTOCOL_VERSION = "page-fetch-v2";
+const PAGE_SIZE_CANDIDATES = [1000, 500, 100];
 const LEASE_MILLISECONDS = 45_000;
-const PAGE_FETCH_ATTEMPTS = 4;
-const PAGE_FETCH_TIMEOUT_MILLISECONDS = 15_000;
-const RETRY_BASE_MILLISECONDS = 400;
+const PAGE_FETCH_TIMEOUT_MILLISECONDS = 20_000;
+const RETRY_BACKOFF_MILLISECONDS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export async function onRequestGet({ request, env }) {
@@ -47,14 +47,22 @@ export async function onRequestGet({ request, env }) {
       return profileResponse(record, store.mode);
     }
 
-    if (record.status === "failed") {
-      if (!requestData.retry) {
-        return progressResponse(record, store.mode, 502);
+    const now = Date.now();
+    if (record.status === "paused") {
+      const nextRetryAt = Date.parse(record.nextRetryAt || "");
+      if (!requestData.forceRetry && Number.isFinite(nextRetryAt) && nextRetryAt > now) {
+        return progressResponse(record, store.mode);
       }
-      resetFailedRecord(record);
+      resumeRecord(record);
     }
 
-    const now = Date.now();
+    if (record.status === "failed") {
+      if (!requestData.forceRetry) {
+        return progressResponse(record, store.mode, 502);
+      }
+      resumeRecord(record);
+    }
+
     const leaseUntil = Date.parse(record.leaseUntil || "");
     if (Number.isFinite(leaseUntil) && leaseUntil > now) {
       return progressResponse(record, store.mode);
@@ -66,15 +74,18 @@ export async function onRequestGet({ request, env }) {
 
     try {
       record = await advanceCollection(record, serviceKey);
-      record.error = "";
-      record.errorDetails = null;
-      record.failedPage = null;
+      clearCollectionError(record);
     } catch (error) {
       const details = normalizeErrorDetails(error, Number(record.nextPage) || 1);
-      record.status = "failed";
       record.failedPage = details.pageNo;
       record.errorDetails = details;
       record.error = formatCollectionError(details);
+      if (details.retryable) {
+        pauseRecord(record);
+      } else {
+        record.status = "failed";
+        record.nextRetryAt = "";
+      }
     }
 
     record.leaseUntil = "";
@@ -112,7 +123,7 @@ function parseRequest(request) {
     source,
     sourceSignature: JSON.stringify(source),
     expectedHouseholds: positiveInteger(getSearchParam(request, "expectedHouseholds")),
-    retry: getSearchParam(request, "retry") === "1",
+    forceRetry: getSearchParam(request, "retry") === "1",
   };
 }
 
@@ -121,19 +132,24 @@ function createRecord(requestData) {
   return {
     complexKey: requestData.complexKey,
     calculationVersion: SUPPLY_CALCULATION_VERSION,
+    collectionProtocolVersion: COLLECTION_PROTOCOL_VERSION,
     source: requestData.source,
     sourceSignature: requestData.sourceSignature,
     expectedHouseholds: requestData.expectedHouseholds,
     status: "building",
+    pageSize: null,
+    pageSizeProbe: [],
     nextPage: 1,
     totalPages: null,
     totalRows: null,
     lastSuccessfulPage: 0,
     collectionState: createCollectionState(),
     profile: null,
+    consecutiveFailures: 0,
     error: "",
     errorDetails: null,
     failedPage: null,
+    nextRetryAt: "",
     leaseUntil: "",
     createdAt: now,
     updatedAt: now,
@@ -144,24 +160,33 @@ function createRecord(requestData) {
 function shouldResetRecord(record, requestData) {
   return (
     record.calculationVersion !== SUPPLY_CALCULATION_VERSION ||
-    record.sourceSignature !== requestData.sourceSignature
+    record.sourceSignature !== requestData.sourceSignature ||
+    (record.status !== "ready" && record.collectionProtocolVersion !== COLLECTION_PROTOCOL_VERSION)
   );
 }
 
 async function advanceCollection(record, serviceKey) {
   const pageNo = Math.max(1, Number(record.nextPage) || 1);
-  const page = await fetchBuildingAreaPageWithRetry(serviceKey, record.source, pageNo);
+  let page;
+
+  if (!record.pageSize) {
+    const negotiation = await negotiatePageSize(serviceKey, record.source);
+    page = negotiation.page;
+    record.pageSize = negotiation.pageSize;
+    record.pageSizeProbe = negotiation.probes;
+  } else {
+    page = await fetchBuildingAreaPage(serviceKey, record.source, pageNo, record.pageSize);
+  }
 
   if (!record.totalPages) {
     record.totalRows = page.totalCount;
-    record.totalPages = Math.max(1, Math.ceil(page.totalCount / PAGE_SIZE));
+    record.totalPages = Math.max(1, Math.ceil(page.totalCount / record.pageSize));
   }
 
   const totalPages = Math.max(1, Number(record.totalPages) || 1);
   if (pageNo > totalPages) {
     throw createCollectionError({
       pageNo,
-      attempts: 1,
       resultCode: "PAGE_OUT_OF_RANGE",
       resultMessage: `전체 ${totalPages}페이지보다 큰 페이지를 요청했습니다.`,
       retryable: false,
@@ -184,13 +209,19 @@ async function advanceCollection(record, serviceKey) {
     if (!record.profile.groups.length) {
       throw createCollectionError({
         pageNo,
-        attempts: page.attempts,
         resultCode: "NO_RESIDENTIAL_UNITS",
         resultMessage: "공급면적 그룹을 생성할 수 있는 공동주택 세대가 없습니다.",
         retryable: false,
       });
     }
+    record.profile.collection = {
+      pageSize: record.pageSize,
+      totalRows: record.totalRows,
+      totalPages: record.totalPages,
+      protocolVersion: COLLECTION_PROTOCOL_VERSION,
+    };
     record.status = "ready";
+    record.collectionState = null;
     record.fetchedAt = new Date().toISOString();
   } else {
     record.status = "building";
@@ -199,33 +230,54 @@ async function advanceCollection(record, serviceKey) {
   return record;
 }
 
-async function fetchBuildingAreaPageWithRetry(serviceKey, source, pageNo) {
+async function negotiatePageSize(serviceKey, source) {
+  const probes = [];
   let lastError;
 
-  for (let attempt = 1; attempt <= PAGE_FETCH_ATTEMPTS; attempt += 1) {
+  for (const requestedPageSize of PAGE_SIZE_CANDIDATES) {
     try {
-      const page = await fetchBuildingAreaPage(serviceKey, source, pageNo);
-      return { ...page, attempts: attempt };
+      const page = await fetchBuildingAreaPage(serviceKey, source, 1, requestedPageSize);
+      const pageSize = resolvePageSize(page.returnedPageSize, requestedPageSize);
+      probes.push({
+        requestedPageSize,
+        returnedPageSize: pageSize,
+        status: "selected",
+      });
+      return { page, pageSize, probes };
     } catch (error) {
-      lastError = attachAttempt(error, pageNo, attempt);
-      if (!lastError.details.retryable || attempt === PAGE_FETCH_ATTEMPTS) {
-        throw lastError;
+      lastError = error;
+      const details = normalizeErrorDetails(error, 1);
+      probes.push({
+        requestedPageSize,
+        status: "failed",
+        upstreamStatus: details.upstreamStatus,
+        resultCode: details.resultCode,
+      });
+      if (isCredentialError(details)) {
+        throw error;
       }
-      await delay(RETRY_BASE_MILLISECONDS * 2 ** (attempt - 1));
     }
   }
 
-  throw lastError;
+  if (lastError?.details) {
+    lastError.details.pageSizeProbe = probes;
+  }
+  throw lastError || createCollectionError({
+    pageNo: 1,
+    resultCode: "PAGE_SIZE_NEGOTIATION_FAILED",
+    resultMessage: "건축HUB 페이지 크기를 결정하지 못했습니다.",
+    retryable: true,
+  });
 }
 
-async function fetchBuildingAreaPage(serviceKey, source, pageNo) {
+async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize) {
   const url = buildBuildingHubUrl({
     serviceKey,
     operation: BUILDING_AREA_OPERATION,
     params: {
       ...source,
       pageNo: String(pageNo),
-      numOfRows: String(PAGE_SIZE),
+      numOfRows: String(pageSize),
     },
   });
 
@@ -241,7 +293,7 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo) {
     const isTimeout = error?.name === "TimeoutError" || error?.name === "AbortError";
     throw createCollectionError({
       pageNo,
-      attempts: 1,
+      upstreamStatus: null,
       resultCode: isTimeout ? "TIMEOUT" : "NETWORK_ERROR",
       resultMessage: isTimeout
         ? `${PAGE_FETCH_TIMEOUT_MILLISECONDS / 1000}초 안에 응답이 없어 중단했습니다.`
@@ -264,7 +316,6 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo) {
   if (!response.ok) {
     throw createCollectionError({
       pageNo,
-      attempts: 1,
       upstreamStatus: response.status,
       resultCode: resultCode || `HTTP_${response.status}`,
       resultMessage: resultMessage || compactResponseMessage(responseText),
@@ -275,7 +326,6 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo) {
   if (!payload) {
     throw createCollectionError({
       pageNo,
-      attempts: 1,
       upstreamStatus: response.status,
       resultCode: "INVALID_RESPONSE",
       resultMessage: compactResponseMessage(responseText) || "JSON 응답을 해석할 수 없습니다.",
@@ -286,7 +336,6 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo) {
   if (resultCode && !["00", "000"].includes(resultCode)) {
     throw createCollectionError({
       pageNo,
-      attempts: 1,
       upstreamStatus: response.status,
       resultCode,
       resultMessage: resultMessage || "건축HUB API가 오류를 반환했습니다.",
@@ -298,6 +347,7 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo) {
   return {
     items: normalizeItems(body.items || body.item),
     totalCount: Math.max(0, Number(body.totalCount || 0)),
+    returnedPageSize: positiveInteger(body.numOfRows),
   };
 }
 
@@ -321,6 +371,11 @@ function progressResponse(record, storage, status = 202) {
     Number(record.lastSuccessfulPage) || (Number(record.nextPage) || 1) - 1
   );
   const currentPage = Number(record.failedPage || record.nextPage) || 1;
+  const nextRetryTimestamp = Date.parse(record.nextRetryAt || "");
+  const retryAfterMs =
+    Number.isFinite(nextRetryTimestamp) && nextRetryTimestamp > Date.now()
+      ? nextRetryTimestamp - Date.now()
+      : 0;
 
   return json(
     {
@@ -329,9 +384,15 @@ function progressResponse(record, storage, status = 202) {
       progress: totalPages ? Math.min(100, Math.round((completedPages / totalPages) * 100)) : 0,
       completedPages,
       totalPages,
+      totalRows: Math.max(0, Number(record.totalRows) || 0),
       currentPage,
+      pageSize: positiveInteger(record.pageSize),
+      pageSizeProbe: Array.isArray(record.pageSizeProbe) ? record.pageSizeProbe : [],
       processedUnits: Number(record.collectionState?.processedUnits) || 0,
       expectedHouseholds: positiveInteger(record.expectedHouseholds),
+      consecutiveFailures: Math.max(0, Number(record.consecutiveFailures) || 0),
+      nextRetryAt: record.nextRetryAt || "",
+      retryAfterMs,
       error: record.error || "",
       errorDetails: record.errorDetails || null,
       failedPage: positiveInteger(record.failedPage),
@@ -345,8 +406,8 @@ function syncHouseholdValidation(record) {
   const nextValidation = buildHouseholdValidation({
     expectedHouseholds: record.expectedHouseholds,
     profileUnitCount: record.profile.unitCount,
-    processedUnits: record.collectionState?.processedUnits,
-    skippedUnits: record.collectionState?.skippedUnits,
+    processedUnits: record.profile.unitCount,
+    skippedUnits: record.profile.skippedUnits,
   });
   const changed =
     JSON.stringify(record.profile.householdValidation || null) !== JSON.stringify(nextValidation);
@@ -354,12 +415,63 @@ function syncHouseholdValidation(record) {
   return changed;
 }
 
-function resetFailedRecord(record) {
+function pauseRecord(record) {
+  let failures = Math.max(0, Number(record.consecutiveFailures) || 0) + 1;
+  if (failures >= 3 && downgradePageSize(record)) {
+    failures = 1;
+  }
+  const delayIndex = Math.min(failures - 1, RETRY_BACKOFF_MILLISECONDS.length - 1);
+  record.status = "paused";
+  record.consecutiveFailures = failures;
+  record.nextRetryAt = new Date(Date.now() + RETRY_BACKOFF_MILLISECONDS[delayIndex]).toISOString();
+}
+
+function downgradePageSize(record) {
+  const currentPageSize = positiveInteger(record.pageSize);
+  const currentIndex = PAGE_SIZE_CANDIDATES.indexOf(currentPageSize);
+  if (currentIndex < 0 || currentIndex >= PAGE_SIZE_CANDIDATES.length - 1) return false;
+
+  const nextPageSize = PAGE_SIZE_CANDIDATES[currentIndex + 1];
+  const completedRows = Math.min(
+    Math.max(0, Number(record.totalRows) || 0),
+    Math.max(0, Number(record.lastSuccessfulPage) || 0) * currentPageSize
+  );
+  const completedPages = Math.floor(completedRows / nextPageSize);
+
+  record.pageSize = nextPageSize;
+  record.totalPages = Math.max(1, Math.ceil((Number(record.totalRows) || 0) / nextPageSize));
+  record.lastSuccessfulPage = completedPages;
+  record.nextPage = completedPages + 1;
+  record.failedPage = record.nextPage;
+  record.error = `${record.error} · 페이지 크기를 ${nextPageSize}행으로 낮춰 재시도합니다.`;
+  record.errorDetails = {
+    ...(record.errorDetails || {}),
+    pageSizeDowngradedFrom: currentPageSize,
+    pageSizeDowngradedTo: nextPageSize,
+  };
+  record.pageSizeProbe = [
+    ...(Array.isArray(record.pageSizeProbe) ? record.pageSizeProbe : []),
+    {
+      requestedPageSize: nextPageSize,
+      previousPageSize: currentPageSize,
+      status: "downgraded-after-retries",
+    },
+  ];
+  return true;
+}
+
+function resumeRecord(record) {
   record.status = "building";
+  record.nextRetryAt = "";
+  record.leaseUntil = "";
+}
+
+function clearCollectionError(record) {
+  record.consecutiveFailures = 0;
   record.error = "";
   record.errorDetails = null;
   record.failedPage = null;
-  record.leaseUntil = "";
+  record.nextRetryAt = "";
 }
 
 function createCollectionError(details) {
@@ -367,7 +479,6 @@ function createCollectionError(details) {
   error.details = {
     operation: BUILDING_AREA_OPERATION,
     pageNo: positiveInteger(details.pageNo) || 1,
-    attempts: positiveInteger(details.attempts) || 1,
     upstreamStatus: positiveInteger(details.upstreamStatus),
     resultCode: String(details.resultCode || ""),
     resultMessage: sanitizeErrorMessage(details.resultMessage),
@@ -376,27 +487,11 @@ function createCollectionError(details) {
   return error;
 }
 
-function attachAttempt(error, pageNo, attempts) {
-  if (!error?.details) {
-    return createCollectionError({
-      pageNo,
-      attempts,
-      resultCode: "UNKNOWN_ERROR",
-      resultMessage: error?.message || "알 수 없는 오류가 발생했습니다.",
-      retryable: true,
-    });
-  }
-  error.details.pageNo = positiveInteger(pageNo) || 1;
-  error.details.attempts = positiveInteger(attempts) || 1;
-  return error;
-}
-
 function normalizeErrorDetails(error, pageNo) {
   return (
     error?.details ||
     createCollectionError({
       pageNo,
-      attempts: 1,
       resultCode: "UNKNOWN_ERROR",
       resultMessage: error?.message || "건축HUB 공급면적 수집 실패",
       retryable: true,
@@ -406,10 +501,20 @@ function normalizeErrorDetails(error, pageNo) {
 
 function formatCollectionError(details) {
   const status = details.upstreamStatus ? `HTTP ${details.upstreamStatus}` : details.resultCode;
-  const context = [status, `${details.attempts}회 시도`].filter(Boolean).join(", ");
-  return `건축HUB ${details.pageNo}페이지 조회 실패 (${context}): ${
+  return `건축HUB ${details.pageNo}페이지 조회 지연 (${status}): ${
     details.resultMessage || "상세 메시지 없음"
   }`;
+}
+
+function resolvePageSize(returnedPageSize, requestedPageSize) {
+  const returned = positiveInteger(returnedPageSize);
+  if (!returned) return requestedPageSize;
+  return Math.min(requestedPageSize, returned);
+}
+
+function isCredentialError(details) {
+  const value = `${details.resultCode} ${details.resultMessage}`.toUpperCase();
+  return /(SERVICE_KEY|AUTH|UNAUTHORIZED|ACCESS DENIED|등록되지 않은 인증키|인증키)/.test(value);
 }
 
 function parseResponsePayload(text) {
@@ -452,8 +557,4 @@ function isRetryableApiError(resultCode) {
 function positiveInteger(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : null;
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

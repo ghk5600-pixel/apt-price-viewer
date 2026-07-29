@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.07.29-01-rc.2";
+const APP_VERSION = "v2026.07.29-01-rc.3";
 const APP_UPDATED_AT = "2026-07-29";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
@@ -18,7 +18,7 @@ const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
 const DEFAULT_KAKAO_JAVASCRIPT_KEY = "f1381fcba950abff23056942bd19d544";
 const ADMIN_QUERY_PARAM = "admin";
 const SUPPLY_CALCULATION_VERSION = "supply-model-v2";
-const SUPPLY_PROFILE_POLL_DELAY = 450;
+const SUPPLY_PROFILE_POLL_DELAY = 750;
 const SUPPLY_PROFILE_MAX_POLLS = 500;
 
 const AREA_GROUPS = [
@@ -1606,13 +1606,12 @@ async function refreshSupplyProfileForComplex(complexId) {
 }
 
 async function pollSupplyProfile(complex, params) {
-  const retryFailedPage = complex.supplyProfileStatus === "error";
   complex.supplyProfileStatus = "loading";
   complex.supplyProfileMessage = "건축HUB 공급면적 준비 중";
   render();
 
   for (let poll = 0; poll < SUPPLY_PROFILE_MAX_POLLS; poll += 1) {
-    const response = await fetch(buildSupplyProfileRequestUrl(complex, params, retryFailedPage));
+    const response = await fetch(buildSupplyProfileRequestUrl(complex, params));
     const payload = await response.json().catch(() => ({}));
     if (payload.status === "ready" && payload.profile) {
       complex.supplyProfile = payload.profile;
@@ -1636,23 +1635,21 @@ async function pollSupplyProfile(complex, params) {
 
     complex.supplyProfileStatus = "loading";
     complex.supplyProfileProgress = Number(payload.progress) || 0;
-    const expectedHouseholds = Number(payload.expectedHouseholds) || Number(complex.households) || 0;
-    const householdProgress = expectedHouseholds
-      ? `${formatNumber(payload.processedUnits || 0)}/${formatNumber(expectedHouseholds)}세대`
-      : `${formatNumber(payload.processedUnits || 0)}세대`;
-    complex.supplyProfileMessage = payload.totalPages
-      ? `건축HUB ${payload.currentPage || payload.completedPages + 1}/${payload.totalPages}페이지 · ${householdProgress} 처리`
-      : "건축HUB 공급면적 자료 확인 중";
-    if (poll % 3 === 0) {
+    complex.supplyProfileMessage = formatSupplyProfileProgressMessage(payload, complex);
+    if (payload.status === "paused" || poll % 3 === 0) {
       saveCustomComplexes();
       render();
     }
-    await delay(SUPPLY_PROFILE_POLL_DELAY);
+    const retryDelay =
+      payload.status === "paused"
+        ? Math.max(SUPPLY_PROFILE_POLL_DELAY, Number(payload.retryAfterMs) || 5_000)
+        : SUPPLY_PROFILE_POLL_DELAY;
+    await delay(retryDelay);
   }
   throw new Error("공급면적 수집이 계속 진행 중입니다. 단지를 다시 선택하면 이어서 처리합니다.");
 }
 
-function buildSupplyProfileRequestUrl(complex, params, retryFailedPage = false) {
+function buildSupplyProfileRequestUrl(complex, params) {
   const url = new URL("/api/supply-profile", window.location.origin);
   url.searchParams.set("complexKey", buildSupplyComplexKey(complex, params));
   url.searchParams.set("sigunguCd", params.sigunguCd);
@@ -1663,10 +1660,29 @@ function buildSupplyProfileRequestUrl(complex, params, retryFailedPage = false) 
   if (Number(complex.households) > 0) {
     url.searchParams.set("expectedHouseholds", String(Math.round(Number(complex.households))));
   }
-  if (retryFailedPage) {
-    url.searchParams.set("retry", "1");
-  }
   return url.toString();
+}
+
+function formatSupplyProfileProgressMessage(payload, complex) {
+  const expectedHouseholds = Number(payload.expectedHouseholds) || Number(complex.households) || 0;
+  const householdProgress = expectedHouseholds
+    ? `${formatNumber(payload.processedUnits || 0)}/${formatNumber(expectedHouseholds)}세대`
+    : `${formatNumber(payload.processedUnits || 0)}세대`;
+  const pageProgress = payload.totalPages
+    ? `${payload.currentPage || payload.completedPages + 1}/${payload.totalPages}페이지`
+    : "페이지 크기 확인";
+  const pageSize = Number(payload.pageSize) > 0 ? ` · ${formatNumber(payload.pageSize)}행 단위` : "";
+
+  if (payload.status === "paused") {
+    const seconds = Math.max(1, Math.ceil((Number(payload.retryAfterMs) || 0) / 1000));
+    const status = payload.errorDetails?.upstreamStatus
+      ? `HTTP ${payload.errorDetails.upstreamStatus}`
+      : payload.errorDetails?.resultCode || "응답 지연";
+    return `건축HUB ${pageProgress} 일시 대기 (${status}) · ${seconds}초 후 자동 재시도`;
+  }
+  return payload.totalPages
+    ? `건축HUB ${pageProgress}${pageSize} · ${householdProgress} 처리`
+    : "건축HUB 최대 페이지 크기 확인 중";
 }
 
 function formatSupplyProfileReadyMessage(payload) {
