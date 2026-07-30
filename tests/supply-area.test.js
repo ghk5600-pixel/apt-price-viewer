@@ -139,6 +139,43 @@ test("여러 지번에서 같은 건축물대장 관리번호가 반복되어도
   assert.equal(profile.groups[0].unitCount, 1);
 });
 
+test("collection checkpoints keep unit identifiers and patterns compact", () => {
+  const rows = [];
+  for (let index = 0; index < 3000; index += 1) {
+    const unitKey = `11680-10000-${String(index).padStart(10, "0")}`;
+    rows.push(
+      row(unitKey, "전유", 84.95, "아파트", "", "101동"),
+      row(unitKey, "공용", 26.77, "", "계단실", "101동")
+    );
+  }
+
+  const state = consumeBuildingAreaRows(createCollectionState(), rows, { isFinal: true });
+
+  assert.equal(state.processedUnits, 3000);
+  assert.equal(state.seenUnitHashes.length, 3000);
+  assert.equal(state.patterns.length, 1);
+  assert.equal("components" in state.patterns[0], false);
+  assert.ok(JSON.stringify(state).length < 100000);
+});
+
+test("legacy full management identifiers migrate to compact hashes", () => {
+  const duplicateRows = [
+    row("legacy-unit", "전유", 84.95, "아파트", "", "101동"),
+    row("legacy-unit", "공용", 26.77, "", "계단실", "101동"),
+  ];
+  const legacyState = {
+    ...createCollectionState(),
+    seenUnitHashes: undefined,
+    seenUnitKeys: ["legacy-unit"],
+  };
+
+  const state = consumeBuildingAreaRows(legacyState, duplicateRows, { isFinal: true });
+
+  assert.equal(state.processedUnits, 0);
+  assert.equal(state.seenUnitHashes.length, 1);
+  assert.equal("seenUnitKeys" in state, false);
+});
+
 function row(key, useType, area, mainPurpose, detailPurpose, dong) {
   return {
     mgmBldrgstPk: key,

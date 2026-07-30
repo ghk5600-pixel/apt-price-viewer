@@ -81,7 +81,7 @@ export function createCollectionState() {
     processedRows: 0,
     processedUnits: 0,
     skippedUnits: 0,
-    seenUnitKeys: [],
+    seenUnitHashes: [],
     warnings: [],
   };
 }
@@ -93,12 +93,13 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
   const isFinal = Boolean(options.isFinal);
   const processCount = isFinal ? groups.length : Math.max(0, groups.length - 1);
   const patternIndex = new Map(state.patterns.map((pattern) => [pattern.key, pattern]));
-  const seenUnitKeys = new Set(state.seenUnitKeys);
+  const seenUnitHashes = new Set(state.seenUnitHashes);
 
   for (let index = 0; index < processCount; index += 1) {
     const unitKey = String(groups[index][0]?.mgmBldrgstPk || "");
-    if (unitKey && seenUnitKeys.has(unitKey)) continue;
-    if (unitKey) seenUnitKeys.add(unitKey);
+    const unitHash = unitKey ? hashUnitKey(unitKey) : "";
+    if (unitHash && seenUnitHashes.has(unitHash)) continue;
+    if (unitHash) seenUnitHashes.add(unitHash);
     const unit = buildUnitPattern(groups[index]);
     if (!unit) {
       state.skippedUnits += 1;
@@ -108,7 +109,7 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
     state.processedUnits += 1;
   }
 
-  state.seenUnitKeys = [...seenUnitKeys];
+  state.seenUnitHashes = [...seenUnitHashes];
   state.carryRows = isFinal || !groups.length ? [] : groups[groups.length - 1];
   state.processedRows += Array.isArray(rows) ? rows.length : 0;
   if (isFinal && state.carryRows.length) {
@@ -253,7 +254,7 @@ function normalizeCollectionState(inputState) {
     processedRows: Number(state.processedRows) || 0,
     processedUnits: Number(state.processedUnits) || 0,
     skippedUnits: Number(state.skippedUnits) || 0,
-    seenUnitKeys: Array.isArray(state.seenUnitKeys) ? state.seenUnitKeys : [],
+    seenUnitHashes: normalizeSeenUnitHashes(state),
     warnings: Array.isArray(state.warnings) ? state.warnings : [],
   };
 }
@@ -331,7 +332,8 @@ function mergeUnitPattern(patterns, patternIndex, unit) {
     existing.unitCount += 1;
     return;
   }
-  const pattern = { ...unit, key };
+  const { components: _components, ...compactUnit } = unit;
+  const pattern = { ...compactUnit, key };
   patterns.push(pattern);
   patternIndex.set(key, pattern);
 }
@@ -500,4 +502,21 @@ function round(value, digits) {
 function positiveInteger(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.round(number) : null;
+}
+
+function normalizeSeenUnitHashes(state) {
+  if (Array.isArray(state.seenUnitHashes)) return state.seenUnitHashes;
+  if (Array.isArray(state.seenUnitKeys)) {
+    return state.seenUnitKeys.map((key) => hashUnitKey(String(key || ""))).filter(Boolean);
+  }
+  return [];
+}
+
+function hashUnitKey(value) {
+  let hash = 1469598103934665603n;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 1099511628211n);
+  }
+  return hash.toString(36);
 }
