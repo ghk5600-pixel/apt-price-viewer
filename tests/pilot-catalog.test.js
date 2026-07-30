@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  attachRtmsMatch,
+  buildRecentDealMonths,
   buildPilotCatalogEntry,
+  hasExcludedHousingProgram,
   isApartmentType,
+  isSaleTenure,
   parseCsv,
   parseLotAddress,
   selectSeoulLegalDongs,
@@ -42,6 +46,7 @@ test("2020년 이후 200세대 이상 아파트와 주상복합을 시험 대상
     kaptdaCnt: "200",
     kaptDongCnt: "2",
     codeAptNm: "주상복합",
+    codeSaleNm: "분양",
     kaptAddr: "서울특별시 강남구 개포동 12-3",
     doroJuso: "서울특별시 강남구 시험로 1",
   };
@@ -63,7 +68,73 @@ test("2020년 이후 200세대 이상 아파트와 주상복합을 시험 대상
     ...base,
     codeAptNm: "오피스텔",
   });
-  assert.deepEqual(nonApartment.exclusionReasons, ["non-apartment"]);
+  assert.deepEqual(nonApartment.exclusionReasons, ["unsupported-housing-type"]);
+});
+
+test("도시형 생활주택과 임대형 공동주택을 시험 대상에서 제외한다", () => {
+  assert.equal(isApartmentType("아파트"), true);
+  assert.equal(isApartmentType("주상복합"), true);
+  assert.equal(isApartmentType("도시형 생활주택(아파트)"), false);
+  assert.equal(isApartmentType("오피스텔"), false);
+
+  assert.equal(isSaleTenure("분양"), true);
+  assert.equal(isSaleTenure("분양+임대"), true);
+  assert.equal(isSaleTenure("임대"), false);
+  assert.equal(
+    hasExcludedHousingProgram({
+      complexName: "역세권 청년안심주택",
+      apartmentType: "아파트",
+      saleType: "분양",
+    }),
+    true
+  );
+});
+
+test("국토부 아파트 매매 자료를 법정동과 지번 또는 단지명으로 연결한다", () => {
+  const entry = {
+    eligible: true,
+    exclusionReasons: [],
+    complexName: "래미안대치팰리스1단지",
+    eupmyeondongName: "대치동",
+    bun: "0611",
+    ji: "0000",
+  };
+  const matched = attachRtmsMatch(entry, [
+    {
+      aptNm: "래미안대치팰리스",
+      umdNm: "대치동",
+      jibun: "611",
+      dealYear: "2026",
+      dealMonth: "6",
+      dealDay: "3",
+    },
+    {
+      aptNm: "다른단지",
+      umdNm: "도곡동",
+      jibun: "611",
+      dealYear: "2026",
+      dealMonth: "7",
+      dealDay: "1",
+    },
+  ]);
+  assert.equal(matched.eligible, true);
+  assert.equal(matched.tradeMatched, true);
+  assert.equal(matched.tradeMatchCount, 1);
+  assert.equal(matched.tradeMatchMethod, "lot+name");
+  assert.equal(matched.lastTradeDate, "20260603");
+
+  const unmatched = attachRtmsMatch(entry, [
+    { aptNm: "다른단지", umdNm: "대치동", jibun: "999" },
+  ]);
+  assert.equal(unmatched.eligible, false);
+  assert.deepEqual(unmatched.exclusionReasons, ["no-apartment-sale-trade-match"]);
+});
+
+test("검증 기준월부터 최근 24개월을 역순으로 생성한다", () => {
+  const months = buildRecentDealMonths(new Date("2026-07-31T00:00:00Z"), 24);
+  assert.equal(months.length, 24);
+  assert.equal(months[0], "202607");
+  assert.equal(months.at(-1), "202408");
 });
 
 test("일반 지번과 산 지번을 건축HUB 요청 형식으로 변환한다", () => {
@@ -94,12 +165,4 @@ test("최신 준공일, 세대수, K-apt 코드 순서로 우선순위를 정한
       ["C", 3],
     ]
   );
-});
-
-test("혼합 건물 중 주상복합은 포함하고 비주거 시설은 제외한다", () => {
-  assert.equal(isApartmentType("아파트"), true);
-  assert.equal(isApartmentType("주상복합"), true);
-  assert.equal(isApartmentType("도시형 생활주택(아파트)"), true);
-  assert.equal(isApartmentType("오피스텔"), false);
-  assert.equal(isApartmentType("상가"), false);
 });

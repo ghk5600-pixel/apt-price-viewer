@@ -17,6 +17,7 @@ const PILOT_SCHEMA = [
     sigungu_name TEXT NOT NULL,
     eupmyeondong_name TEXT NOT NULL,
     apartment_type TEXT NOT NULL,
+    sale_type TEXT NOT NULL DEFAULT '',
     approval_date TEXT NOT NULL,
     households INTEGER NOT NULL,
     building_count INTEGER NOT NULL DEFAULT 0,
@@ -25,6 +26,10 @@ const PILOT_SCHEMA = [
     plat_gb_cd TEXT NOT NULL DEFAULT '0',
     bun TEXT NOT NULL,
     ji TEXT NOT NULL,
+    trade_match_count INTEGER NOT NULL DEFAULT 0,
+    trade_match_method TEXT NOT NULL DEFAULT '',
+    last_trade_date TEXT NOT NULL DEFAULT '',
+    catalog_version TEXT NOT NULL DEFAULT '',
     priority_rank INTEGER NOT NULL,
     profile_status TEXT NOT NULL DEFAULT 'pending',
     profile_calculation_version TEXT NOT NULL DEFAULT '',
@@ -100,23 +105,37 @@ export function createD1RestClient({
 
     async ensureSchema() {
       for (const sql of PILOT_SCHEMA) await query(sql);
+      await ensureColumns(query, "supply_batch_catalog", {
+        sale_type: "TEXT NOT NULL DEFAULT ''",
+        trade_match_count: "INTEGER NOT NULL DEFAULT 0",
+        trade_match_method: "TEXT NOT NULL DEFAULT ''",
+        last_trade_date: "TEXT NOT NULL DEFAULT ''",
+        catalog_version: "TEXT NOT NULL DEFAULT ''",
+      });
     },
 
-    async getCatalogCount() {
-      const result = await query("SELECT COUNT(*) AS count FROM supply_batch_catalog");
+    async getCatalogCount(catalogVersion = "") {
+      const result = catalogVersion
+        ? await query(
+            "SELECT COUNT(*) AS count FROM supply_batch_catalog WHERE catalog_version = ?1",
+            [catalogVersion]
+          )
+        : await query("SELECT COUNT(*) AS count FROM supply_batch_catalog");
       return Number(result.results?.[0]?.count || 0);
     },
 
-    async upsertCatalog(entries) {
+    async replaceCatalog(entries, catalogVersion) {
       const sql = `INSERT INTO supply_batch_catalog (
           complex_key, kapt_code, complex_name, bjd_code, sido_name, sigungu_name,
-          eupmyeondong_name, apartment_type, approval_date, households, building_count,
-          lot_address, road_address, plat_gb_cd, bun, ji, priority_rank,
+          eupmyeondong_name, apartment_type, sale_type, approval_date, households,
+          building_count, lot_address, road_address, plat_gb_cd, bun, ji,
+          trade_match_count, trade_match_method, last_trade_date, catalog_version,
+          priority_rank,
           profile_status, profile_calculation_version, attempt_count, last_error,
           discovered_at, updated_at
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-          ?16, ?17, 'pending', '', 0, '', ?18, ?19
+          ?16, ?17, ?18, ?19, ?20, ?21, ?22, 'pending', '', 0, '', ?23, ?24
         )
         ON CONFLICT(complex_key) DO UPDATE SET
           kapt_code = excluded.kapt_code,
@@ -126,6 +145,7 @@ export function createD1RestClient({
           sigungu_name = excluded.sigungu_name,
           eupmyeondong_name = excluded.eupmyeondong_name,
           apartment_type = excluded.apartment_type,
+          sale_type = excluded.sale_type,
           approval_date = excluded.approval_date,
           households = excluded.households,
           building_count = excluded.building_count,
@@ -134,6 +154,10 @@ export function createD1RestClient({
           plat_gb_cd = excluded.plat_gb_cd,
           bun = excluded.bun,
           ji = excluded.ji,
+          trade_match_count = excluded.trade_match_count,
+          trade_match_method = excluded.trade_match_method,
+          last_trade_date = excluded.last_trade_date,
+          catalog_version = excluded.catalog_version,
           priority_rank = excluded.priority_rank,
           discovered_at = excluded.discovered_at,
           updated_at = excluded.updated_at`;
@@ -148,6 +172,7 @@ export function createD1RestClient({
           entry.sigunguName,
           entry.eupmyeondongName,
           entry.apartmentType,
+          entry.saleType,
           entry.approvalDate,
           entry.households,
           entry.buildingCount,
@@ -156,18 +181,28 @@ export function createD1RestClient({
           entry.platGbCd,
           entry.bun,
           entry.ji,
+          entry.tradeMatchCount,
+          entry.tradeMatchMethod,
+          entry.lastTradeDate,
+          catalogVersion,
           entry.priorityRank,
           entry.discoveredAt,
           updatedAt,
         ]);
       }
+      await query(
+        "DELETE FROM supply_batch_catalog WHERE catalog_version <> ?1",
+        [catalogVersion]
+      );
     },
 
-    async listCatalog() {
+    async listCatalog(catalogVersion = "") {
       const result = await query(
         `SELECT * FROM supply_batch_catalog
          WHERE sido_name = '서울특별시' AND approval_date >= '20200101'
-         ORDER BY priority_rank ASC`
+           AND (?1 = '' OR catalog_version = ?1)
+         ORDER BY priority_rank ASC`,
+        [catalogVersion]
       );
       return result.results || [];
     },
@@ -270,4 +305,14 @@ export function createD1RestClient({
       );
     },
   };
+}
+
+async function ensureColumns(query, tableName, columns) {
+  const result = await query(`PRAGMA table_info(${tableName})`);
+  const existing = new Set((result.results || []).map((column) => column.name));
+  for (const [name, definition] of Object.entries(columns)) {
+    if (!existing.has(name)) {
+      await query(`ALTER TABLE ${tableName} ADD COLUMN ${name} ${definition}`);
+    }
+  }
 }

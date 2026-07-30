@@ -14,8 +14,12 @@ import { SUPPLY_CALCULATION_VERSION } from "../functions/_shared/supply-area.js"
 import { createD1RestClient } from "./lib/d1-rest-client.mjs";
 import { createMolitBatchClient } from "./lib/molit-batch-client.mjs";
 import {
+  attachRtmsMatch,
+  buildRecentDealMonths,
   buildPilotCatalogEntry,
   parseCsv,
+  PILOT_CATALOG_VERSION,
+  PILOT_TRADE_LOOKBACK_MONTHS,
   selectSeoulLegalDongs,
   sortPilotCatalog,
 } from "./lib/pilot-catalog.mjs";
@@ -45,13 +49,22 @@ let completedCount = 0;
 let stoppedReason = "";
 
 const report = {
-  version: "v2026.07.30-01-rc.6",
+  version: "v2026.07.31-01-rc.1",
   runId,
   scope: {
     region: "서울특별시",
     approvalDateFrom: "2020-01-01",
     minimumHouseholds: 200,
     includedBuildingTypes: ["아파트", "주상복합"],
+    excludedHousingPrograms: [
+      "도시형 생활주택",
+      "청년안심주택",
+      "공공임대주택",
+    ],
+    requiredSaleTenure: true,
+    requiredRtmsApartmentSaleMatch: true,
+    rtmsLookbackMonths: PILOT_TRADE_LOOKBACK_MONTHS,
+    catalogVersion: PILOT_CATALOG_VERSION,
   },
   config,
   startedAt,
@@ -64,6 +77,13 @@ const report = {
     exclusions: {},
     errors: [],
     reusedExistingCatalog: false,
+    tradeVerification: {
+      districts: 0,
+      requestedMonths: 0,
+      successfulMonths: 0,
+      failedMonths: 0,
+      matchedComplexes: 0,
+    },
   },
   collection: {
     attempted: 0,
@@ -128,7 +148,7 @@ async function run() {
 }
 
 async function buildCatalogWhenNeeded() {
-  const existingCount = await d1.getCatalogCount();
+  const existingCount = await d1.getCatalogCount(PILOT_CATALOG_VERSION);
   if (existingCount > 0 && !config.refreshCatalog) {
     report.catalog.reusedExistingCatalog = true;
     report.catalog.eligibleComplexes = existingCount;
@@ -190,20 +210,30 @@ async function buildCatalogWhenNeeded() {
   });
 
   const validResults = catalogResults.filter(Boolean);
-  for (const result of validResults) {
+  const staticEligible = validResults.filter((result) => result.eligible);
+  const verifiedByKey = new Map(
+    (await verifyApartmentSaleMatches(staticEligible)).map((result) => [
+      result.complexKey,
+      result,
+    ])
+  );
+  const finalResults = validResults.map(
+    (result) => verifiedByKey.get(result.complexKey) || result
+  );
+  for (const result of finalResults) {
     for (const reason of result.exclusionReasons) {
       report.catalog.exclusions[reason] =
         (report.catalog.exclusions[reason] || 0) + 1;
     }
   }
-  const eligible = sortPilotCatalog(validResults.filter((result) => result.eligible));
+  const eligible = sortPilotCatalog(finalResults.filter((result) => result.eligible));
   report.catalog.eligibleComplexes = eligible.length;
-  if (eligible.length) await d1.upsertCatalog(eligible);
+  await d1.replaceCatalog(eligible, PILOT_CATALOG_VERSION);
   console.log(`시험 대상 ${eligible.length}개 단지를 D1 카탈로그에 저장했습니다.`);
 }
 
 async function collectProfiles() {
-  const catalog = await d1.listCatalog();
+  const catalog = await d1.listCatalog(PILOT_CATALOG_VERSION);
   for (const row of catalog) {
     if (
       completedCount >= config.maxComplexes ||
@@ -268,6 +298,74 @@ async function collectProfiles() {
   ) {
     stoppedReason ||= "attempt-limit-reached";
   }
+}
+
+async function verifyApartmentSaleMatches(entries) {
+  if (!entries.length) return [];
+  const months = buildRecentDealMonths(new Date(), PILOT_TRADE_LOOKBACK_MONTHS);
+  const entriesByLawd = new Map();
+  for (const entry of entries) {
+    const lawdCd = entry.bjdCode.slice(0, 5);
+    if (!entriesByLawd.has(lawdCd)) entriesByLawd.set(lawdCd, []);
+    entriesByLawd.get(lawdCd).push(entry);
+  }
+
+  report.catalog.tradeVerification.districts = entriesByLawd.size;
+  report.catalog.tradeVerification.requestedMonths = entriesByLawd.size * months.length;
+  const verified = [];
+
+  for (const [lawdCd, districtEntries] of entriesByLawd) {
+    console.log(
+      `${lawdCd}: 최근 ${months.length}개월 아파트 매매 실거래로 ` +
+      `${districtEntries.length}개 단지를 검증합니다.`
+    );
+    const monthResults = await mapWithConcurrency(months, 4, async (dealYmd) => {
+      if (!hasBudget()) return { dealYmd, ok: false, items: [], budget: true };
+      try {
+        return {
+          dealYmd,
+          ok: true,
+          items: await molit.fetchRtmsTrades(lawdCd, dealYmd),
+        };
+      } catch (error) {
+        report.catalog.errors.push({
+          stage: "rtms-trade",
+          lawdCd,
+          dealYmd,
+          message: error.message,
+        });
+        return { dealYmd, ok: false, items: [], error: error.message };
+      }
+    });
+    const successful = monthResults.filter((result) => result.ok);
+    const failed = monthResults.filter((result) => !result.ok);
+    report.catalog.tradeVerification.successfulMonths += successful.length;
+    report.catalog.tradeVerification.failedMonths += failed.length;
+
+    if (failed.length) {
+      for (const entry of districtEntries) {
+        verified.push({
+          ...entry,
+          eligible: false,
+          exclusionReasons: [
+            ...entry.exclusionReasons,
+            "rtms-verification-incomplete",
+          ],
+        });
+      }
+      continue;
+    }
+
+    const items = successful.flatMap((result) => result.items);
+    for (const entry of districtEntries) {
+      const matched = attachRtmsMatch(entry, items);
+      if (matched.tradeMatched) {
+        report.catalog.tradeVerification.matchedComplexes += 1;
+      }
+      verified.push(matched);
+    }
+  }
+  return verified;
 }
 
 async function collectOneComplex(row, record) {
@@ -411,7 +509,7 @@ function assertBudget(stage) {
 async function saveRun(status) {
   await d1.saveRun({
     runId,
-    scope: "seoul-built-from-2020-households-200",
+    scope: "seoul-sale-apartment-built-from-2020-households-200",
     mode: config.mode,
     status,
     catalogCount: report.catalog.eligibleComplexes,

@@ -1,3 +1,8 @@
+import {
+  buildRtmsUrl,
+  parseRtmsXml,
+} from "../../functions/_shared/molit.js";
+
 const APT_LIST_ENDPOINT =
   "https://apis.data.go.kr/1613000/AptListService3/getLegaldongAptList3";
 const APT_BASIS_ENDPOINT =
@@ -63,6 +68,36 @@ export function createMolitBatchClient({
       });
       return assertApiSuccess(payload, "AptBasis").item || {};
     },
+
+    async fetchRtmsTrades(lawdCd, dealYmd) {
+      const rows = [];
+      let pageNo = 1;
+      let totalCount = Number.POSITIVE_INFINITY;
+      const numOfRows = 1000;
+
+      while (rows.length < totalCount) {
+        const url = buildRtmsUrl({
+          serviceKey,
+          lawdCd,
+          dealYmd,
+          pageNo: String(pageNo),
+          numOfRows: String(numOfRows),
+        });
+        const xml = await fetchTextWithRetry(url, {
+          fetchImpl,
+          onRequest,
+          timeoutMs,
+          operation: "rtms-trade",
+        });
+        assertXmlApiSuccess(xml, "RTMS");
+        const items = parseRtmsXml(xml);
+        rows.push(...items);
+        totalCount = Math.max(0, Number(textFromXml(xml, "totalCount") || rows.length));
+        if (!items.length || rows.length >= totalCount) break;
+        pageNo += 1;
+      }
+      return rows;
+    },
   };
 }
 
@@ -94,6 +129,34 @@ async function fetchJsonWithRetry(
   throw lastError;
 }
 
+async function fetchTextWithRetry(
+  url,
+  { fetchImpl, onRequest, timeoutMs, operation }
+) {
+  let lastError;
+  for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
+    if (attempt > 0) await sleep(RETRY_DELAYS[attempt - 1]);
+    onRequest({ operation, attempt: attempt + 1 });
+    try {
+      const response = await fetchImpl(url.toString(), {
+        headers: { accept: "application/xml, text/xml, text/plain, */*" },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        const error = new Error(`${operation} responded with HTTP ${response.status}.`);
+        error.retryable = RETRYABLE_STATUSES.has(response.status);
+        throw error;
+      }
+      return text;
+    } catch (error) {
+      lastError = sanitizeFetchError(error, operation);
+      if (error?.retryable === false || attempt === RETRY_DELAYS.length) break;
+    }
+  }
+  throw lastError;
+}
+
 function assertApiSuccess(payload, apiName) {
   const header = payload?.response?.header || {};
   const resultCode = String(header.resultCode || "");
@@ -105,6 +168,17 @@ function assertApiSuccess(payload, apiName) {
     throw error;
   }
   return payload?.response?.body || {};
+}
+
+function assertXmlApiSuccess(xml, apiName) {
+  const resultCode = textFromXml(xml, "resultCode");
+  if (resultCode && !["00", "000"].includes(resultCode)) {
+    const error = new Error(
+      `${apiName} API error ${resultCode}: ${textFromXml(xml, "resultMsg") || "Unknown error"}`
+    );
+    error.retryable = !["20", "22", "30", "31"].includes(resultCode);
+    throw error;
+  }
 }
 
 function normalizeItems(items) {
@@ -120,6 +194,13 @@ function sanitizeFetchError(error, operation) {
   );
   result.retryable = error?.retryable !== false;
   return result;
+}
+
+function textFromXml(xmlText, tagName) {
+  const match = String(xmlText || "").match(
+    new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`)
+  );
+  return match ? match[1].trim() : "";
 }
 
 function sleep(milliseconds) {

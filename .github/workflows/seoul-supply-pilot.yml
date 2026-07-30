@@ -50,6 +50,11 @@ on:
         required: true
         default: false
         type: boolean
+      refresh_catalog:
+        description: "K-apt와 실거래 자료로 대상 목록을 다시 검증"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -73,6 +78,7 @@ jobs:
       PILOT_MAX_MINUTES: ${{ inputs.max_minutes || '240' }}
       PILOT_MAX_API_CALLS: ${{ inputs.max_api_calls || '4500' }}
       PILOT_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
+      PILOT_REFRESH_CATALOG: ${{ inputs.refresh_catalog && '1' || '0' }}
       PILOT_REPORT_PATH: seoul-pilot-report.json
 
     steps:

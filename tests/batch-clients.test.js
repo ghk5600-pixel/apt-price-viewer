@@ -57,6 +57,44 @@ test("K-apt 기본정보의 단일 item을 반환한다", async () => {
   assert.equal(item.kaptdaCnt, "500");
 });
 
+test("국토부 아파트 매매 실거래를 마지막 페이지까지 수집한다", async () => {
+  const requests = [];
+  const client = createMolitBatchClient({
+    serviceKey: "decoding-key",
+    onRequest: (request) => requests.push(request),
+    fetchImpl: async (url) => {
+      const pageNo = Number(new URL(url).searchParams.get("pageNo"));
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?>
+        <response>
+          <header><resultCode>000</resultCode><resultMsg>OK</resultMsg></header>
+          <body>
+            <items><item>
+              <aptNm>시험아파트</aptNm>
+              <dealAmount>100,000</dealAmount>
+              <dealYear>2026</dealYear><dealMonth>7</dealMonth><dealDay>${pageNo}</dealDay>
+              <excluUseAr>84.95</excluUseAr><jibun>12-3</jibun><umdNm>개포동</umdNm>
+            </item></items>
+            <numOfRows>1</numOfRows><pageNo>${pageNo}</pageNo><totalCount>2</totalCount>
+          </body>
+        </response>`,
+        { status: 200, headers: { "content-type": "application/xml" } }
+      );
+    },
+  });
+
+  const items = await client.fetchRtmsTrades("11680", "202607");
+  assert.equal(items.length, 2);
+  assert.deepEqual(
+    items.map((item) => item.dealDay),
+    ["1", "2"]
+  );
+  assert.deepEqual(
+    requests.map((request) => request.operation),
+    ["rtms-trade", "rtms-trade"]
+  );
+});
+
 test("Cloudflare D1 REST query에 인증 헤더와 바인딩 값을 전달한다", async () => {
   const calls = [];
   const client = createD1RestClient({
@@ -107,6 +145,58 @@ test("Cloudflare D1 오류 메시지를 실행 로그에 노출한다", async ()
     () => client.query("SELECT 1"),
     /D1 permission denied/
   );
+});
+
+test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 교체한다", async () => {
+  const calls = [];
+  const client = createD1RestClient({
+    accountId: "account-id",
+    databaseId: "database-id",
+    apiToken: "api-token",
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(
+        JSON.stringify({ success: true, result: [{ success: true, results: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    },
+  });
+
+  await client.replaceCatalog(
+    [
+      {
+        complexKey: "aptlist-A1",
+        kaptCode: "A1",
+        complexName: "시험아파트",
+        bjdCode: "1168010300",
+        sidoName: "서울특별시",
+        sigunguName: "강남구",
+        eupmyeondongName: "개포동",
+        apartmentType: "아파트",
+        saleType: "분양",
+        approvalDate: "20260101",
+        households: 500,
+        buildingCount: 5,
+        lotAddress: "서울특별시 강남구 개포동 12-3",
+        roadAddress: "서울특별시 강남구 시험로 1",
+        platGbCd: "0",
+        bun: "0012",
+        ji: "0003",
+        tradeMatchCount: 3,
+        tradeMatchMethod: "lot+name",
+        lastTradeDate: "20260701",
+        priorityRank: 1,
+        discoveredAt: "2026-07-31T00:00:00.000Z",
+      },
+    ],
+    "seoul-sale-apartment-v2"
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].params.length, 24);
+  assert.equal(calls[0].params[8], "분양");
+  assert.equal(calls[0].params[20], "seoul-sale-apartment-v2");
+  assert.match(calls[1].sql, /DELETE FROM supply_batch_catalog/);
 });
 
 function apiResponse(body) {
