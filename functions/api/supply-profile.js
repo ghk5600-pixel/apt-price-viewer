@@ -21,7 +21,7 @@ import {
 import { createSupplyProfileStore } from "../_shared/supply-store.js";
 
 const BUILDING_AREA_OPERATION = "getBrExposPubuseAreaInfo";
-const COLLECTION_PROTOCOL_VERSION = "page-fetch-v3-multi-lot";
+const COLLECTION_PROTOCOL_VERSION = "page-fetch-v4-unit-key";
 const PAGE_SIZE_CANDIDATES = [1000, 500, 100];
 const LEASE_MILLISECONDS = 45_000;
 const PAGE_FETCH_TIMEOUT_MILLISECONDS = 20_000;

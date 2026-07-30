@@ -45,7 +45,7 @@ let completedCount = 0;
 let stoppedReason = "";
 
 const report = {
-  version: "v2026.07.30-01-rc.5",
+  version: "v2026.07.30-01-rc.6",
   runId,
   scope: {
     region: "서울특별시",

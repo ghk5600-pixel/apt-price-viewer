@@ -159,11 +159,43 @@ test("collection checkpoints keep unit identifiers and patterns compact", () => 
   assert.ok(JSON.stringify(state).length < 100000);
 });
 
-test("legacy full management identifiers migrate to compact hashes", () => {
-  const duplicateRows = [
-    row("legacy-unit", "전유", 84.95, "아파트", "", "101동"),
-    row("legacy-unit", "공용", 26.77, "", "계단실", "101동"),
+test("the same building-register PK is separated by dong and unit number", () => {
+  const rows = [
+    { ...row("building-pk", "전유", 84.95, "아파트", "", "101동"), hoNm: "101호" },
+    { ...row("building-pk", "공용", 26.77, "", "계단실", "101동"), hoNm: "101호" },
+    { ...row("building-pk", "전유", 59.98, "아파트", "", "101동"), hoNm: "102호" },
+    { ...row("building-pk", "공용", 20.02, "", "계단실", "101동"), hoNm: "102호" },
   ];
+
+  const state = consumeBuildingAreaRows(createCollectionState(), rows, { isFinal: true });
+
+  assert.equal(state.processedUnits, 2);
+  assert.equal(state.patterns.length, 2);
+  assert.equal(state.seenUnitHashes.length, 2);
+});
+
+test("unfinished page rows are persisted with calculation fields only", () => {
+  const rows = [
+    {
+      ...row("building-pk", "전유", 84.95, "아파트", "", "101동"),
+      hoNm: "101호",
+      unusedLargeField: "x".repeat(100000),
+    },
+    {
+      ...row("building-pk", "공용", 26.77, "", "계단실", "101동"),
+      hoNm: "101호",
+      unusedLargeField: "x".repeat(100000),
+    },
+  ];
+
+  const state = consumeBuildingAreaRows(createCollectionState(), rows);
+
+  assert.equal(state.carryRows.length, 2);
+  assert.equal("unusedLargeField" in state.carryRows[0], false);
+  assert.ok(JSON.stringify(state).length < 5000);
+});
+
+test("legacy stored patterns are compacted before the next checkpoint", () => {
   const legacyState = {
     ...createCollectionState(),
     patterns: [
@@ -172,15 +204,11 @@ test("legacy full management identifiers migrate to compact hashes", () => {
         components: [{ purpose: "계단실", area: 26.77, included: true }],
       },
     ],
-    seenUnitHashes: undefined,
-    seenUnitKeys: ["legacy-unit"],
   };
 
-  const state = consumeBuildingAreaRows(legacyState, duplicateRows, { isFinal: true });
+  const state = consumeBuildingAreaRows(legacyState, [], { isFinal: true });
 
   assert.equal(state.processedUnits, 0);
-  assert.equal(state.seenUnitHashes.length, 1);
-  assert.equal("seenUnitKeys" in state, false);
   assert.equal("components" in state.patterns[0], false);
   assert.match(state.patterns[0].key, /^h:[0-9a-z]+$/);
 });
@@ -193,6 +221,7 @@ function row(key, useType, area, mainPurpose, detailPurpose, dong) {
     mainPurpsCdNm: mainPurpose,
     etcPurps: detailPurpose,
     dongNm: dong,
+    hoNm: key,
   };
 }
 

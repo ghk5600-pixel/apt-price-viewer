@@ -371,5 +371,6 @@ function row(key, useType, area, purpose) {
     mainPurpsCdNm: purpose,
     etcPurps: "",
     dongNm: "101동",
+    hoNm: key,
   };
 }

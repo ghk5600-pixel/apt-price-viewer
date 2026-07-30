@@ -1,4 +1,4 @@
-export const SUPPLY_CALCULATION_VERSION = "supply-model-v3";
+export const SUPPLY_CALCULATION_VERSION = "supply-model-v4";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 
 export const STANDARD_AREA_GROUPS = [
@@ -88,7 +88,9 @@ export function createCollectionState() {
 
 export function consumeBuildingAreaRows(inputState, rows, options = {}) {
   const state = normalizeCollectionState(inputState);
-  const combinedRows = [...state.carryRows, ...(Array.isArray(rows) ? rows : [])];
+  const incomingRows = (Array.isArray(rows) ? rows : []).map(compactAreaRow);
+  const combinedRows = [...state.carryRows, ...incomingRows]
+    .sort((left, right) => unitRowKey(left).localeCompare(unitRowKey(right)));
   const groups = groupContiguousRows(combinedRows);
   const isFinal = Boolean(options.isFinal);
   const processCount = isFinal ? groups.length : Math.max(0, groups.length - 1);
@@ -96,7 +98,7 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
   const seenUnitHashes = new Set(state.seenUnitHashes);
 
   for (let index = 0; index < processCount; index += 1) {
-    const unitKey = String(groups[index][0]?.mgmBldrgstPk || "");
+    const unitKey = unitRowKey(groups[index][0]);
     const unitHash = unitKey ? hashUnitKey(unitKey) : "";
     if (unitHash && seenUnitHashes.has(unitHash)) continue;
     if (unitHash) seenUnitHashes.add(unitHash);
@@ -249,7 +251,7 @@ export function normalizeDongName(value) {
 function normalizeCollectionState(inputState) {
   const state = inputState && typeof inputState === "object" ? inputState : createCollectionState();
   return {
-    carryRows: Array.isArray(state.carryRows) ? state.carryRows : [],
+    carryRows: Array.isArray(state.carryRows) ? state.carryRows.map(compactAreaRow) : [],
     patterns: Array.isArray(state.patterns) ? state.patterns.map(compactStoredPattern) : [],
     processedRows: Number(state.processedRows) || 0,
     processedUnits: Number(state.processedUnits) || 0,
@@ -265,7 +267,7 @@ function groupContiguousRows(rows) {
   let currentRows = [];
 
   rows.forEach((row) => {
-    const key = String(row?.mgmBldrgstPk || "");
+    const key = unitRowKey(row);
     if (!key) return;
     if (currentRows.length && key !== currentKey) {
       groups.push(currentRows);
@@ -276,6 +278,25 @@ function groupContiguousRows(rows) {
   });
   if (currentRows.length) groups.push(currentRows);
   return groups;
+}
+
+function unitRowKey(row) {
+  const managementPk = String(row?.mgmBldrgstPk || "").trim();
+  const unitNumber = String(row?.hoNm || "").trim();
+  if (!managementPk || !unitNumber) return "";
+  return [managementPk, normalizeDongName(row?.dongNm), unitNumber].join("::");
+}
+
+function compactAreaRow(row) {
+  return {
+    mgmBldrgstPk: String(row?.mgmBldrgstPk || ""),
+    dongNm: String(row?.dongNm || ""),
+    hoNm: String(row?.hoNm || ""),
+    exposPubuseGbCdNm: String(row?.exposPubuseGbCdNm || ""),
+    area: Number(row?.area) || 0,
+    mainPurpsCdNm: String(row?.mainPurpsCdNm || ""),
+    etcPurps: String(row?.etcPurps || ""),
+  };
 }
 
 function buildUnitPattern(rows) {
