@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "batch:seoul-pilot": "node scripts/run-seoul-pilot.mjs",
     "test": "node --test tests/*.test.js"
   }
 }

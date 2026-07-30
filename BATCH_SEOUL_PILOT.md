@@ -1,0 +1,67 @@
+# 서울 공급면적 시험 배치
+
+## 시험 범위
+
+- 위치: 서울특별시
+- 사용승인일: 2020년 1월 1일 이후
+- 규모: 200세대 이상
+- 건물 유형: 아파트와 주상복합
+- 우선순위: 사용승인일 최신순, 같은 날짜는 세대수 많은 순
+- 첫 실행 처리량: 공급면적 프로필 3개 단지
+
+배치는 개인 PC가 아니라 GitHub Actions의 원격 컴퓨터에서 실행됩니다. 실행 버튼을 누른
+뒤 PC를 종료해도 작업은 계속되며, 페이지별 중간 결과와 완성 결과는 Cloudflare D1에
+저장됩니다.
+
+## GitHub Secrets 준비
+
+저장소의 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`에서
+아래 네 항목을 등록합니다.
+
+| 이름 | 값 |
+| --- | --- |
+| `MOLIT_SERVICE_KEY` | 공공데이터포털 일반 인증키(Decoding) |
+| `CLOUDFLARE_API_TOKEN` | D1 읽기·쓰기 권한이 있는 Cloudflare API 토큰 |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 계정 ID |
+| `CLOUDFLARE_D1_DATABASE_ID` | 웹앱의 `SUPPLY_DB`가 연결된 D1 데이터베이스 ID |
+
+Cloudflare API 토큰은 `My Profile` → `API Tokens` → `Create Token` → `Custom token`에서
+만듭니다. 권한은 `Account` → `D1` → `Edit`로 지정하고, 계정 리소스는 현재
+`apt-price-viewer`가 있는 계정만 선택합니다.
+
+D1 데이터베이스 ID는 Cloudflare 대시보드의 `Storage & databases` → `D1`에서
+`SUPPLY_DB`에 연결한 데이터베이스를 연 뒤 확인합니다. Preview와 Production이 서로
+다른 D1을 사용한다면, 실제 웹 사용자가 이용할 환경에 연결된 데이터베이스 ID를 넣습니다.
+
+## 시험 브랜치의 첫 실행
+
+시험 브랜치가 GitHub에 처음 올라가면 배치가 기본값으로 한 번 자동 실행됩니다. Secrets를
+브랜치 푸시 전에 등록하지 않았다면 첫 실행은 환경변수 오류로 종료되는 것이 정상입니다.
+
+1. 위 네 개의 GitHub Secrets를 모두 등록합니다.
+2. GitHub 저장소에서 `Actions`를 누릅니다.
+3. 왼쪽에서 `Seoul supply-area pilot`을 선택합니다.
+4. 가장 최근의 실패한 실행을 누릅니다.
+5. 우측 상단 `Re-run jobs` → `Re-run all jobs`를 누릅니다.
+
+이 기능이 나중에 `main`에 합쳐지면 `Run workflow` 버튼으로도 실행할 수 있습니다. 이때
+실행 단계는 `catalog-and-collect`, 최대 단지 수 `3`, 최대 시간 `240`, API 호출 수
+`4500`을 사용합니다.
+
+처음에는 서울 법정동별 K-apt 목록과 기본정보를 모아 시험 카탈로그를 만듭니다. 이후
+최신 준공 단지 3개의 건축HUB 자료를 한 페이지씩 처리합니다. 같은 배치를 다시 실행하면
+카탈로그를 재사용하고, 미완료 단지는 D1에 저장된 다음 페이지부터 이어서 처리합니다.
+
+## 결과 확인
+
+Actions 실행 화면에서 각 단지의 현재 페이지와 전체 페이지를 확인할 수 있습니다.
+실행이 끝나면 화면 아래 `Artifacts`에서 `seoul-supply-pilot-실행번호` 보고서를
+받을 수 있습니다. 보고서에는 아래 항목이 포함됩니다.
+
+- 시험 대상 단지 수와 제외 사유
+- 처리한 단지와 완료·대기·실패 상태
+- 건축HUB 전체 행·페이지 수
+- K-apt 세대수와 건축물대장 수집 세대수 교차검증
+- API 호출 횟수와 오류 상세정보
+
+첫 3개 단지의 공급면적과 세대수 검증이 끝나기 전에는 예약 실행을 켜지 않습니다.

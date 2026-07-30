@@ -1,0 +1,92 @@
+name: Seoul supply-area pilot
+
+on:
+  push:
+    branches:
+      - feature/2026-07-30-seoul-pilot-batch
+    paths:
+      - ".github/workflows/seoul-supply-pilot.yml"
+      - "functions/api/supply-profile.js"
+      - "functions/_shared/supply-area.js"
+      - "migrations/**"
+      - "scripts/**"
+      - "tests/**"
+      - "package.json"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "실행 단계"
+        required: true
+        default: "catalog-and-collect"
+        type: choice
+        options:
+          - catalog-and-collect
+          - catalog
+          - collect
+      max_complexes:
+        description: "이번 실행에서 처리할 최대 단지 수"
+        required: true
+        default: "3"
+        type: string
+      max_minutes:
+        description: "최대 실행 시간(분)"
+        required: true
+        default: "240"
+        type: string
+      max_api_calls:
+        description: "공공데이터 API 최대 호출 수"
+        required: true
+        default: "4500"
+        type: string
+      retry_failed:
+        description: "영구 실패 단지도 다시 시도"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seoul-supply-area-pilot
+  cancel-in-progress: false
+
+jobs:
+  run-pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      MOLIT_SERVICE_KEY: ${{ secrets.MOLIT_SERVICE_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      PILOT_MODE: ${{ inputs.mode || 'catalog-and-collect' }}
+      PILOT_MAX_COMPLEXES: ${{ inputs.max_complexes || '3' }}
+      PILOT_MAX_MINUTES: ${{ inputs.max_minutes || '240' }}
+      PILOT_MAX_API_CALLS: ${{ inputs.max_api_calls || '4500' }}
+      PILOT_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
+      PILOT_REPORT_PATH: seoul-pilot-report.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run Seoul pilot
+        run: npm run batch:seoul-pilot
+
+      - name: Upload pilot report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seoul-supply-pilot-${{ github.run_number }}
+          path: seoul-pilot-report.json
+          if-no-files-found: warn
+          retention-days: 14

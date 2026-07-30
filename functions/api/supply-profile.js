@@ -127,7 +127,7 @@ function parseRequest(request) {
   };
 }
 
-function createRecord(requestData) {
+export function createRecord(requestData) {
   const now = new Date().toISOString();
   return {
     complexKey: requestData.complexKey,
@@ -157,7 +157,7 @@ function createRecord(requestData) {
   };
 }
 
-function shouldResetRecord(record, requestData) {
+export function shouldResetRecord(record, requestData) {
   return (
     record.calculationVersion !== SUPPLY_CALCULATION_VERSION ||
     record.sourceSignature !== requestData.sourceSignature ||
@@ -165,17 +165,23 @@ function shouldResetRecord(record, requestData) {
   );
 }
 
-async function advanceCollection(record, serviceKey) {
+export async function advanceCollection(record, serviceKey, options = {}) {
   const pageNo = Math.max(1, Number(record.nextPage) || 1);
   let page;
 
   if (!record.pageSize) {
-    const negotiation = await negotiatePageSize(serviceKey, record.source);
+    const negotiation = await negotiatePageSize(serviceKey, record.source, options.onRequest);
     page = negotiation.page;
     record.pageSize = negotiation.pageSize;
     record.pageSizeProbe = negotiation.probes;
   } else {
-    page = await fetchBuildingAreaPage(serviceKey, record.source, pageNo, record.pageSize);
+    page = await fetchBuildingAreaPage(
+      serviceKey,
+      record.source,
+      pageNo,
+      record.pageSize,
+      options.onRequest
+    );
   }
 
   if (!record.totalPages) {
@@ -230,13 +236,19 @@ async function advanceCollection(record, serviceKey) {
   return record;
 }
 
-async function negotiatePageSize(serviceKey, source) {
+async function negotiatePageSize(serviceKey, source, onRequest) {
   const probes = [];
   let lastError;
 
   for (const requestedPageSize of PAGE_SIZE_CANDIDATES) {
     try {
-      const page = await fetchBuildingAreaPage(serviceKey, source, 1, requestedPageSize);
+      const page = await fetchBuildingAreaPage(
+        serviceKey,
+        source,
+        1,
+        requestedPageSize,
+        onRequest
+      );
       const pageSize = resolvePageSize(page.returnedPageSize, requestedPageSize);
       probes.push({
         requestedPageSize,
@@ -270,7 +282,7 @@ async function negotiatePageSize(serviceKey, source) {
   });
 }
 
-async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize) {
+async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize, onRequest) {
   const url = buildBuildingHubUrl({
     serviceKey,
     operation: BUILDING_AREA_OPERATION,
@@ -284,6 +296,11 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize) {
   let response;
   let responseText = "";
   try {
+    onRequest?.({
+      operation: BUILDING_AREA_OPERATION,
+      pageNo,
+      pageSize,
+    });
     response = await fetch(url.toString(), {
       headers: { accept: "application/json, text/plain, */*" },
       signal: AbortSignal.timeout(PAGE_FETCH_TIMEOUT_MILLISECONDS),
@@ -415,7 +432,7 @@ function syncHouseholdValidation(record) {
   return changed;
 }
 
-function pauseRecord(record) {
+export function pauseRecord(record) {
   let failures = Math.max(0, Number(record.consecutiveFailures) || 0) + 1;
   if (failures >= 3 && downgradePageSize(record)) {
     failures = 1;
@@ -460,13 +477,13 @@ function downgradePageSize(record) {
   return true;
 }
 
-function resumeRecord(record) {
+export function resumeRecord(record) {
   record.status = "building";
   record.nextRetryAt = "";
   record.leaseUntil = "";
 }
 
-function clearCollectionError(record) {
+export function clearCollectionError(record) {
   record.consecutiveFailures = 0;
   record.error = "";
   record.errorDetails = null;
@@ -487,7 +504,7 @@ function createCollectionError(details) {
   return error;
 }
 
-function normalizeErrorDetails(error, pageNo) {
+export function normalizeErrorDetails(error, pageNo) {
   return (
     error?.details ||
     createCollectionError({
@@ -499,7 +516,7 @@ function normalizeErrorDetails(error, pageNo) {
   );
 }
 
-function formatCollectionError(details) {
+export function formatCollectionError(details) {
   const status = details.upstreamStatus ? `HTTP ${details.upstreamStatus}` : details.resultCode;
   return `건축HUB ${details.pageNo}페이지 조회 지연 (${status}): ${
     details.resultMessage || "상세 메시지 없음"
