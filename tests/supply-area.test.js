@@ -155,6 +155,7 @@ test("collection checkpoints keep unit identifiers and patterns compact", () => 
   assert.equal(state.seenUnitHashes.length, 3000);
   assert.equal(state.patterns.length, 1);
   assert.equal("components" in state.patterns[0], false);
+  assert.ok(state.patterns[0].key.length < 20);
   assert.ok(JSON.stringify(state).length < 100000);
 });
 
@@ -181,6 +182,7 @@ test("legacy full management identifiers migrate to compact hashes", () => {
   assert.equal(state.seenUnitHashes.length, 1);
   assert.equal("seenUnitKeys" in state, false);
   assert.equal("components" in state.patterns[0], false);
+  assert.match(state.patterns[0].key, /^h:[0-9a-z]+$/);
 });
 
 function row(key, useType, area, mainPurpose, detailPurpose, dong) {

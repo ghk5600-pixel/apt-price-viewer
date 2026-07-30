@@ -321,12 +321,12 @@ function mergeUnitPattern(patterns, patternIndex, unit) {
     .map((component) => `${component.purpose}:${component.area.toFixed(4)}:${component.included ? 1 : 0}`)
     .sort()
     .join("|");
-  const key = [
+  const key = hashPatternKey([
     normalizeDongName(unit.dong),
     unit.exclusiveArea.toFixed(4),
     unit.supplyArea.toFixed(4),
     componentSignature,
-  ].join("::");
+  ].join("::"));
   const existing = patternIndex.get(key);
   if (existing) {
     existing.unitCount += 1;
@@ -514,7 +514,15 @@ function normalizeSeenUnitHashes(state) {
 
 function compactStoredPattern(pattern) {
   const { components: _components, ...compactPattern } = pattern || {};
-  return compactPattern;
+  return {
+    ...compactPattern,
+    key: hashPatternKey(String(compactPattern.key || "")),
+  };
+}
+
+function hashPatternKey(value) {
+  if (/^h:[0-9a-z]+$/.test(value)) return value;
+  return `h:${hashUnitKey(value)}`;
 }
 
 function hashUnitKey(value) {

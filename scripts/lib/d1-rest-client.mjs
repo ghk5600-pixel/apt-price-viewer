@@ -188,23 +188,33 @@ export function createD1RestClient({
 
     async putProfileRecord(complexKey, record) {
       const updatedAt = record.updatedAt || new Date().toISOString();
-      await query(
-        `INSERT INTO supply_profile_cache
-          (complex_key, calculation_version, status, record_json, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(complex_key) DO UPDATE SET
-           calculation_version = excluded.calculation_version,
-           status = excluded.status,
-           record_json = excluded.record_json,
-           updated_at = excluded.updated_at`,
-        [
-          complexKey,
-          record.calculationVersion || SUPPLY_CALCULATION_VERSION,
-          record.status || "building",
-          JSON.stringify(record),
-          updatedAt,
-        ]
-      );
+      const recordJson = JSON.stringify(record);
+      try {
+        await query(
+          `INSERT INTO supply_profile_cache
+            (complex_key, calculation_version, status, record_json, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT(complex_key) DO UPDATE SET
+             calculation_version = excluded.calculation_version,
+             status = excluded.status,
+             record_json = excluded.record_json,
+             updated_at = excluded.updated_at`,
+          [
+            complexKey,
+            record.calculationVersion || SUPPLY_CALCULATION_VERSION,
+            record.status || "building",
+            recordJson,
+            updatedAt,
+          ]
+        );
+      } catch (error) {
+        const byteLength = new TextEncoder().encode(recordJson).length;
+        throw new Error(
+          `${error.message} (profile ${complexKey}: ${byteLength} bytes, ` +
+          `${record.collectionState?.patterns?.length || 0} patterns, ` +
+          `${record.collectionState?.seenUnitHashes?.length || 0} unit hashes)`
+        );
+      }
     },
 
     async updateCatalogProfile(
