@@ -250,7 +250,7 @@ function normalizeCollectionState(inputState) {
   const state = inputState && typeof inputState === "object" ? inputState : createCollectionState();
   return {
     carryRows: Array.isArray(state.carryRows) ? state.carryRows : [],
-    patterns: Array.isArray(state.patterns) ? state.patterns : [],
+    patterns: Array.isArray(state.patterns) ? state.patterns.map(compactStoredPattern) : [],
     processedRows: Number(state.processedRows) || 0,
     processedUnits: Number(state.processedUnits) || 0,
     skippedUnits: Number(state.skippedUnits) || 0,
@@ -510,6 +510,11 @@ function normalizeSeenUnitHashes(state) {
     return state.seenUnitKeys.map((key) => hashUnitKey(String(key || ""))).filter(Boolean);
   }
   return [];
+}
+
+function compactStoredPattern(pattern) {
+  const { components: _components, ...compactPattern } = pattern || {};
+  return compactPattern;
 }
 
 function hashUnitKey(value) {

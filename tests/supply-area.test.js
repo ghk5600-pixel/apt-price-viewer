@@ -165,6 +165,12 @@ test("legacy full management identifiers migrate to compact hashes", () => {
   ];
   const legacyState = {
     ...createCollectionState(),
+    patterns: [
+      {
+        ...pattern("101동", 84.95, 111.72, 1),
+        components: [{ purpose: "계단실", area: 26.77, included: true }],
+      },
+    ],
     seenUnitHashes: undefined,
     seenUnitKeys: ["legacy-unit"],
   };
@@ -174,6 +180,7 @@ test("legacy full management identifiers migrate to compact hashes", () => {
   assert.equal(state.processedUnits, 0);
   assert.equal(state.seenUnitHashes.length, 1);
   assert.equal("seenUnitKeys" in state, false);
+  assert.equal("components" in state.patterns[0], false);
 });
 
 function row(key, useType, area, mainPurpose, detailPurpose, dong) {
