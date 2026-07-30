@@ -8,6 +8,7 @@ test("1000행 페이지를 우선 선택하고 한 페이지씩 순차 저장한
   globalThis.__supplyProfileRecords = new Map();
   globalThis.fetch = async (url) => {
     const parsed = new URL(url);
+    if (!isAreaRequest(parsed)) return discoveryResponse();
     const pageNo = Number(parsed.searchParams.get("pageNo"));
     const numOfRows = Number(parsed.searchParams.get("numOfRows"));
     requests.push({ pageNo, numOfRows });
@@ -58,7 +59,9 @@ test("1000행 요청이 실패하면 500행으로 자동 하향한다", async ()
   const requestedSizes = [];
   globalThis.__supplyProfileRecords = new Map();
   globalThis.fetch = async (url) => {
-    const numOfRows = Number(new URL(url).searchParams.get("numOfRows"));
+    const parsed = new URL(url);
+    if (!isAreaRequest(parsed)) return discoveryResponse();
+    const numOfRows = Number(parsed.searchParams.get("numOfRows"));
     requestedSizes.push(numOfRows);
     if (numOfRows === 1000) {
       return errorResponse(500, "99", "큰 페이지 요청 처리 실패");
@@ -89,6 +92,7 @@ test("HTTP 500을 장기 대기로 저장하고 F5 상황에서도 실패 페이
   globalThis.__supplyProfileRecords = new Map();
   globalThis.fetch = async (url) => {
     const parsed = new URL(url);
+    if (!isAreaRequest(parsed)) return discoveryResponse();
     const pageNo = Number(parsed.searchParams.get("pageNo"));
     const numOfRows = Number(parsed.searchParams.get("numOfRows"));
     requestedPages.push(pageNo);
@@ -143,6 +147,7 @@ test("같은 페이지가 반복 실패하면 처리 위치를 유지하고 페�
   globalThis.__supplyProfileRecords = new Map();
   globalThis.fetch = async (url) => {
     const parsed = new URL(url);
+    if (!isAreaRequest(parsed)) return discoveryResponse();
     const pageNo = Number(parsed.searchParams.get("pageNo"));
     const numOfRows = Number(parsed.searchParams.get("numOfRows"));
     requests.push({ pageNo, numOfRows });
@@ -190,7 +195,9 @@ test("K-apt 세대수와 수집 세대수 차이를 경고 정보로 반환한�
   const originalFetch = globalThis.fetch;
   globalThis.__supplyProfileRecords = new Map();
   globalThis.fetch = async (url) => {
-    const numOfRows = Number(new URL(url).searchParams.get("numOfRows"));
+    const parsed = new URL(url);
+    if (!isAreaRequest(parsed)) return discoveryResponse();
+    const numOfRows = Number(parsed.searchParams.get("numOfRows"));
     return successResponse([
       row("mismatch-unit", "전유", 84.95, "아파트"),
       row("mismatch-unit", "공용", 26.77, "계단실"),
@@ -212,7 +219,79 @@ test("K-apt 세대수와 수집 세대수 차이를 경고 정보로 반환한�
   }
 });
 
-function requestUrl(complexKey, { expectedHouseholds = 0 } = {}) {
+test("대표 지번 조회가 0건이어도 같은 법정동의 동일 단지명 지번으로 공급면적을 수집한다", async () => {
+  const originalFetch = globalThis.fetch;
+  const areaLots = [];
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    const operation = parsed.pathname.split("/").pop();
+    const bun = parsed.searchParams.get("bun") || "";
+    const ji = parsed.searchParams.get("ji") || "";
+    const numOfRows = Number(parsed.searchParams.get("numOfRows"));
+
+    if (operation === "getBrRecapTitleInfo" && !bun) {
+      return successResponse(
+        [
+          {
+            mgmBldrgstPk: "matched-title",
+            sigunguCd: "11680",
+            bjdongCd: "11400",
+            platGbCd: "0",
+            bun: "0744",
+            ji: "0001",
+            bldNm: "테스트래미안",
+            newPlatPlc: "서울특별시 강남구 시험로 10",
+            hhldCnt: 1,
+            useAprDay: "20250101",
+            mainPurpsCdNm: "공동주택",
+          },
+        ],
+        1,
+        numOfRows
+      );
+    }
+    if (!isAreaRequest(parsed)) return successResponse([], 0, numOfRows);
+
+    areaLots.push(`${bun}-${ji}`);
+    return successResponse(
+      [
+        row("alternate-lot-unit", "전유", 84.95, "아파트"),
+        row("alternate-lot-unit", "공용", 26.77, "계단실"),
+      ],
+      2,
+      numOfRows
+    );
+  };
+
+  try {
+    const { response, payload } = await callApi(
+      requestUrl("alternate-lot-complex", {
+        expectedHouseholds: 1,
+        complexName: "테스트래미안",
+        roadAddress: "서울특별시 강남구 시험로 10",
+        approvalDate: "20250101",
+      })
+    );
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "ready");
+    assert.deepEqual(areaLots, ["0744-0001"]);
+    assert.equal(payload.profile.source.resolved[0].bun, "0744");
+    assert.equal(payload.validation.status, "matched");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+function requestUrl(
+  complexKey,
+  {
+    expectedHouseholds = 0,
+    complexName = "",
+    roadAddress = "",
+    approvalDate = "",
+  } = {}
+) {
   const url = new URL("http://localhost/api/supply-profile");
   url.searchParams.set("complexKey", complexKey);
   url.searchParams.set("sigunguCd", "11680");
@@ -223,6 +302,9 @@ function requestUrl(complexKey, { expectedHouseholds = 0 } = {}) {
   if (expectedHouseholds) {
     url.searchParams.set("expectedHouseholds", String(expectedHouseholds));
   }
+  if (complexName) url.searchParams.set("complexName", complexName);
+  if (roadAddress) url.searchParams.set("roadAddress", roadAddress);
+  if (approvalDate) url.searchParams.set("approvalDate", approvalDate);
   return url.toString();
 }
 
@@ -256,6 +338,29 @@ function errorResponse(status, resultCode, resultMsg) {
     }),
     { status, headers: { "content-type": "application/json" } }
   );
+}
+
+function discoveryResponse() {
+  return successResponse(
+    [
+      {
+        mgmBldrgstPk: "title-test",
+        sigunguCd: "11680",
+        bjdongCd: "11400",
+        platGbCd: "0",
+        bun: "0743",
+        ji: "0000",
+        bldNm: "시험단지",
+        mainPurpsCdNm: "공동주택",
+      },
+    ],
+    1,
+    1000
+  );
+}
+
+function isAreaRequest(url) {
+  return url.pathname.endsWith("/getBrExposPubuseAreaInfo");
 }
 
 function row(key, useType, area, purpose) {

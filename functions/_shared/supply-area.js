@@ -1,4 +1,4 @@
-export const SUPPLY_CALCULATION_VERSION = "supply-model-v2";
+export const SUPPLY_CALCULATION_VERSION = "supply-model-v3";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 
 export const STANDARD_AREA_GROUPS = [
@@ -81,6 +81,7 @@ export function createCollectionState() {
     processedRows: 0,
     processedUnits: 0,
     skippedUnits: 0,
+    seenUnitKeys: [],
     warnings: [],
   };
 }
@@ -92,8 +93,12 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
   const isFinal = Boolean(options.isFinal);
   const processCount = isFinal ? groups.length : Math.max(0, groups.length - 1);
   const patternIndex = new Map(state.patterns.map((pattern) => [pattern.key, pattern]));
+  const seenUnitKeys = new Set(state.seenUnitKeys);
 
   for (let index = 0; index < processCount; index += 1) {
+    const unitKey = String(groups[index][0]?.mgmBldrgstPk || "");
+    if (unitKey && seenUnitKeys.has(unitKey)) continue;
+    if (unitKey) seenUnitKeys.add(unitKey);
     const unit = buildUnitPattern(groups[index]);
     if (!unit) {
       state.skippedUnits += 1;
@@ -103,6 +108,7 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
     state.processedUnits += 1;
   }
 
+  state.seenUnitKeys = [...seenUnitKeys];
   state.carryRows = isFinal || !groups.length ? [] : groups[groups.length - 1];
   state.processedRows += Array.isArray(rows) ? rows.length : 0;
   if (isFinal && state.carryRows.length) {
@@ -247,6 +253,7 @@ function normalizeCollectionState(inputState) {
     processedRows: Number(state.processedRows) || 0,
     processedUnits: Number(state.processedUnits) || 0,
     skippedUnits: Number(state.skippedUnits) || 0,
+    seenUnitKeys: Array.isArray(state.seenUnitKeys) ? state.seenUnitKeys : [],
     warnings: Array.isArray(state.warnings) ? state.warnings : [],
   };
 }

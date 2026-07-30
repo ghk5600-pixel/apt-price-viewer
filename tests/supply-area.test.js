@@ -120,6 +120,25 @@ test("동 정보가 있으면 해당 동의 공급면적 가중치를 우선한�
   assert.ok(Math.abs(result - expected) < 0.01);
 });
 
+test("여러 지번에서 같은 건축물대장 관리번호가 반복되어도 한 세대로 집계한다", () => {
+  const duplicateRows = [
+    row("duplicate-unit", "전유", 84.95, "아파트", "", "101동"),
+    row("duplicate-unit", "공용", 26.77, "", "계단실", "101동"),
+  ];
+  let state = createCollectionState();
+  state = consumeBuildingAreaRows(state, duplicateRows, { isFinal: true });
+  state = consumeBuildingAreaRows(state, duplicateRows, { isFinal: true });
+
+  const profile = buildSupplyProfile({
+    complexKey: "multi-lot-dedup-complex",
+    source: {},
+    collectionState: state,
+  });
+
+  assert.equal(profile.unitCount, 1);
+  assert.equal(profile.groups[0].unitCount, 1);
+});
+
 function row(key, useType, area, mainPurpose, detailPurpose, dong) {
   return {
     mgmBldrgstPk: key,

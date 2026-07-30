@@ -4,6 +4,7 @@ import {
   clearCollectionError,
   createRecord,
   formatCollectionError,
+  markUpstreamPending,
   normalizeErrorDetails,
   pauseRecord,
   resumeRecord,
@@ -27,6 +28,7 @@ const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
 const config = {
   mode: readChoice("PILOT_MODE", "catalog-and-collect", VALID_MODES),
   maxComplexes: readPositiveInteger("PILOT_MAX_COMPLEXES", 3),
+  maxAttempts: readPositiveInteger("PILOT_MAX_ATTEMPTS", 12),
   maxMinutes: readPositiveInteger("PILOT_MAX_MINUTES", 240),
   maxApiCalls: readPositiveInteger("PILOT_MAX_API_CALLS", 4_500),
   maxRetriesPerComplex: readPositiveInteger("PILOT_MAX_RETRIES_PER_COMPLEX", 3),
@@ -43,7 +45,7 @@ let completedCount = 0;
 let stoppedReason = "";
 
 const report = {
-  version: "v2026.07.30-01-rc.1",
+  version: "v2026.07.30-01-rc.2",
   runId,
   scope: {
     region: "서울특별시",
@@ -100,6 +102,9 @@ async function run() {
       await collectProfiles();
     }
 
+    if (report.collection.attempted > 0 && completedCount === 0) {
+      stoppedReason ||= "no-profiles-completed";
+    }
     report.status = stoppedReason ? "partial" : "completed";
   } catch (error) {
     fatalError = error;
@@ -117,6 +122,9 @@ async function run() {
     printSummary();
   }
   if (fatalError) throw fatalError;
+  if (report.collection.attempted > 0 && completedCount === 0) {
+    process.exitCode = 2;
+  }
 }
 
 async function buildCatalogWhenNeeded() {
@@ -197,7 +205,10 @@ async function buildCatalogWhenNeeded() {
 async function collectProfiles() {
   const catalog = await d1.listCatalog();
   for (const row of catalog) {
-    if (report.collection.attempted >= config.maxComplexes) {
+    if (
+      completedCount >= config.maxComplexes ||
+      report.collection.attempted >= config.maxAttempts
+    ) {
       break;
     }
     if (!hasBudget()) {
@@ -212,6 +223,7 @@ async function collectProfiles() {
       await d1.putProfileRecord(requestData.complexKey, record);
     } else {
       record.expectedHouseholds = requestData.expectedHouseholds;
+      record.metadata = requestData.metadata;
     }
 
     if (
@@ -233,7 +245,7 @@ async function collectProfiles() {
 
     const retryAt = Date.parse(record.nextRetryAt || "");
     if (
-      record.status === "paused" &&
+      (record.status === "paused" || record.status === "upstream-pending") &&
       Number.isFinite(retryAt) &&
       retryAt > deadline
     ) {
@@ -250,6 +262,12 @@ async function collectProfiles() {
     report.collection.results.push(result);
     if (result.status === "ready") completedCount += 1;
   }
+  if (
+    completedCount < config.maxComplexes &&
+    report.collection.attempted >= config.maxAttempts
+  ) {
+    stoppedReason ||= "attempt-limit-reached";
+  }
 }
 
 async function collectOneComplex(row, record) {
@@ -258,7 +276,11 @@ async function collectOneComplex(row, record) {
   console.log(`공급면적 수집 시작: ${label}`);
 
   while (hasBudget()) {
-    if (record.status === "paused") {
+    if (record.status === "upstream-pending") {
+      const retryAt = Date.parse(record.nextRetryAt || "");
+      if (Number.isFinite(retryAt) && retryAt > Date.now()) break;
+      resumeRecord(record);
+    } else if (record.status === "paused") {
       const retryAt = Date.parse(record.nextRetryAt || "");
       const waitMs = Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : 0;
       if (retries >= config.maxRetriesPerComplex || Date.now() + waitMs >= deadline) {
@@ -286,7 +308,9 @@ async function collectOneComplex(row, record) {
       record.failedPage = details.pageNo;
       record.errorDetails = details;
       record.error = formatCollectionError(details);
-      if (details.retryable) {
+      if (details.resultCode === "LEDGER_MATCH_NOT_FOUND") {
+        markUpstreamPending(record, details);
+      } else if (details.retryable) {
         pauseRecord(record);
       } else {
         record.status = "failed";
@@ -307,7 +331,13 @@ async function collectOneComplex(row, record) {
     const page = Number(record.lastSuccessfulPage) || 0;
     const total = Number(record.totalPages) || 0;
     console.log(`${label}: ${record.status} ${page}/${total || "?"}페이지`);
-    if (record.status === "ready" || record.status === "failed") break;
+    if (
+      record.status === "ready" ||
+      record.status === "failed" ||
+      record.status === "upstream-pending"
+    ) {
+      break;
+    }
   }
 
   return {
@@ -321,6 +351,7 @@ async function collectOneComplex(row, record) {
     totalPages: Number(record.totalPages) || 0,
     totalRows: Number(record.totalRows) || 0,
     error: record.error || "",
+    resolution: record.resolution || null,
     validation: record.profile?.householdValidation || null,
   };
 }
@@ -336,7 +367,20 @@ function catalogRowToRequest(row) {
   return {
     complexKey: String(row.complex_key),
     source,
-    sourceSignature: JSON.stringify(source),
+    metadata: {
+      complexName: String(row.complex_name || ""),
+      roadAddress: String(row.road_address || ""),
+      lotAddress: String(row.lot_address || ""),
+      approvalDate: String(row.approval_date || ""),
+      expectedHouseholds: Number(row.households) || null,
+    },
+    sourceSignature: JSON.stringify({
+      source,
+      complexName: String(row.complex_name || ""),
+      roadAddress: String(row.road_address || ""),
+      lotAddress: String(row.lot_address || ""),
+      approvalDate: String(row.approval_date || ""),
+    }),
     expectedHouseholds: Number(row.households) || null,
   };
 }
@@ -348,7 +392,10 @@ function noteApiRequest({ operation, pageNo, pageSize, attempt } = {}) {
     : attempt && attempt > 1
       ? ` ${attempt}차 시도`
       : "";
-  if (apiCallCount % 100 === 0 || operation === "getBrExposPubuseAreaInfo") {
+  if (
+    apiCallCount % 100 === 0 ||
+    String(operation || "").startsWith("getBr")
+  ) {
     console.log(`공공데이터 API ${apiCallCount}회: ${operation || "unknown"}${suffix}`);
   }
 }

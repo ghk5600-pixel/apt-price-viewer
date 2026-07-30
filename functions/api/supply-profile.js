@@ -14,13 +14,18 @@ import {
   consumeBuildingAreaRows,
   createCollectionState,
 } from "../_shared/supply-area.js";
+import {
+  LEDGER_MATCH_VERSION,
+  resolveBuildingLedgerSources,
+} from "../_shared/building-match.js";
 import { createSupplyProfileStore } from "../_shared/supply-store.js";
 
 const BUILDING_AREA_OPERATION = "getBrExposPubuseAreaInfo";
-const COLLECTION_PROTOCOL_VERSION = "page-fetch-v2";
+const COLLECTION_PROTOCOL_VERSION = "page-fetch-v3-multi-lot";
 const PAGE_SIZE_CANDIDATES = [1000, 500, 100];
 const LEASE_MILLISECONDS = 45_000;
 const PAGE_FETCH_TIMEOUT_MILLISECONDS = 20_000;
+const UPSTREAM_RECHECK_MILLISECONDS = 30 * 24 * 60 * 60 * 1000;
 const RETRY_BACKOFF_MILLISECONDS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -34,8 +39,16 @@ export async function onRequestGet({ request, env }) {
     if (!record || shouldResetRecord(record, requestData)) {
       record = createRecord(requestData);
       await store.put(requestData.complexKey, record);
-    } else if (requestData.expectedHouseholds) {
-      record.expectedHouseholds = requestData.expectedHouseholds;
+    } else {
+      if (requestData.expectedHouseholds) {
+        record.expectedHouseholds = requestData.expectedHouseholds;
+      }
+      record.metadata = {
+        ...(record.metadata || {}),
+        ...(requestData.metadata || {}),
+        expectedHouseholds:
+          requestData.expectedHouseholds || record.metadata?.expectedHouseholds || null,
+      };
     }
 
     if (record.status === "ready") {
@@ -54,6 +67,14 @@ export async function onRequestGet({ request, env }) {
         return progressResponse(record, store.mode);
       }
       resumeRecord(record);
+    }
+
+    if (record.status === "upstream-pending") {
+      const nextRetryAt = Date.parse(record.nextRetryAt || "");
+      if (!requestData.forceRetry && Number.isFinite(nextRetryAt) && nextRetryAt > now) {
+        return progressResponse(record, store.mode);
+      }
+      resetResolution(record);
     }
 
     if (record.status === "failed") {
@@ -80,7 +101,9 @@ export async function onRequestGet({ request, env }) {
       record.failedPage = details.pageNo;
       record.errorDetails = details;
       record.error = formatCollectionError(details);
-      if (details.retryable) {
+      if (details.resultCode === "LEDGER_MATCH_NOT_FOUND") {
+        markUpstreamPending(record, details);
+      } else if (details.retryable) {
         pauseRecord(record);
       } else {
         record.status = "failed";
@@ -121,7 +144,20 @@ function parseRequest(request) {
   return {
     complexKey,
     source,
-    sourceSignature: JSON.stringify(source),
+    metadata: {
+      complexName: getSearchParam(request, "complexName"),
+      roadAddress: getSearchParam(request, "roadAddress"),
+      lotAddress: getSearchParam(request, "lotAddress"),
+      approvalDate: getSearchParam(request, "approvalDate"),
+      expectedHouseholds: positiveInteger(getSearchParam(request, "expectedHouseholds")),
+    },
+    sourceSignature: JSON.stringify({
+      source,
+      complexName: getSearchParam(request, "complexName"),
+      roadAddress: getSearchParam(request, "roadAddress"),
+      lotAddress: getSearchParam(request, "lotAddress"),
+      approvalDate: getSearchParam(request, "approvalDate"),
+    }),
     expectedHouseholds: positiveInteger(getSearchParam(request, "expectedHouseholds")),
     forceRetry: getSearchParam(request, "retry") === "1",
   };
@@ -134,7 +170,13 @@ export function createRecord(requestData) {
     calculationVersion: SUPPLY_CALCULATION_VERSION,
     collectionProtocolVersion: COLLECTION_PROTOCOL_VERSION,
     source: requestData.source,
+    requestedSource: requestData.source,
     sourceSignature: requestData.sourceSignature,
+    metadata: requestData.metadata || {},
+    resolution: null,
+    resolvedSources: [],
+    sourcePlans: [],
+    activeSourceIndex: 0,
     expectedHouseholds: requestData.expectedHouseholds,
     status: "building",
     pageSize: null,
@@ -166,32 +208,35 @@ export function shouldResetRecord(record, requestData) {
 }
 
 export async function advanceCollection(record, serviceKey, options = {}) {
-  const pageNo = Math.max(1, Number(record.nextPage) || 1);
+  await ensureBuildingLedgerResolution(record, serviceKey, options.onRequest);
+  const plan = activateSourcePlan(record, record.activeSourceIndex);
+  const pageNo = Math.max(1, Number(plan.nextPage) || 1);
   let page;
 
-  if (!record.pageSize) {
-    const negotiation = await negotiatePageSize(serviceKey, record.source, options.onRequest);
+  if (!plan.pageSize) {
+    const negotiation = await negotiatePageSize(serviceKey, plan.source, options.onRequest);
     page = negotiation.page;
-    record.pageSize = negotiation.pageSize;
-    record.pageSizeProbe = negotiation.probes;
+    plan.pageSize = negotiation.pageSize;
+    plan.pageSizeProbe = negotiation.probes;
   } else {
     page = await fetchBuildingAreaPage(
       serviceKey,
-      record.source,
+      plan.source,
       pageNo,
-      record.pageSize,
+      plan.pageSize,
       options.onRequest
     );
   }
 
-  if (!record.totalPages) {
-    record.totalRows = page.totalCount;
-    record.totalPages = Math.max(1, Math.ceil(page.totalCount / record.pageSize));
+  if (!plan.totalPages) {
+    plan.totalRows = page.totalCount;
+    plan.totalPages = Math.max(1, Math.ceil(page.totalCount / plan.pageSize));
   }
 
-  const totalPages = Math.max(1, Number(record.totalPages) || 1);
+  const totalPages = Math.max(1, Number(plan.totalPages) || 1);
   if (pageNo > totalPages) {
     throw createCollectionError({
+      operation: BUILDING_AREA_OPERATION,
       pageNo,
       resultCode: "PAGE_OUT_OF_RANGE",
       resultMessage: `전체 ${totalPages}페이지보다 큰 페이지를 요청했습니다.`,
@@ -202,38 +247,167 @@ export async function advanceCollection(record, serviceKey, options = {}) {
   record.collectionState = consumeBuildingAreaRows(record.collectionState, page.items, {
     isFinal: pageNo === totalPages,
   });
-  record.lastSuccessfulPage = pageNo;
-  record.nextPage = pageNo + 1;
+  plan.lastSuccessfulPage = pageNo;
+  plan.nextPage = pageNo + 1;
 
   if (pageNo === totalPages) {
-    record.profile = buildSupplyProfile({
-      complexKey: record.complexKey,
-      source: record.source,
-      collectionState: record.collectionState,
-      expectedHouseholds: record.expectedHouseholds,
-    });
-    if (!record.profile.groups.length) {
-      throw createCollectionError({
-        pageNo,
-        resultCode: "NO_RESIDENTIAL_UNITS",
-        resultMessage: "공급면적 그룹을 생성할 수 있는 공동주택 세대가 없습니다.",
-        retryable: false,
+    plan.status = "complete";
+    if (record.activeSourceIndex < record.sourcePlans.length - 1) {
+      record.activeSourceIndex += 1;
+      activateSourcePlan(record, record.activeSourceIndex);
+      record.status = "building";
+    } else {
+      record.profile = buildSupplyProfile({
+        complexKey: record.complexKey,
+        source: {
+          requested: record.resolution.requestedSource,
+          resolved: record.resolvedSources,
+          managementPks: record.resolution.managementPks,
+          matchVersion: LEDGER_MATCH_VERSION,
+        },
+        collectionState: record.collectionState,
+        expectedHouseholds: record.expectedHouseholds,
       });
+      if (!record.profile.groups.length) {
+        throw createCollectionError({
+          operation: BUILDING_AREA_OPERATION,
+          pageNo,
+          resultCode: "NO_RESIDENTIAL_UNITS",
+          resultMessage:
+            "동일 단지로 확인한 건축물대장에서 공급면적 그룹을 생성할 공동주택 세대를 찾지 못했습니다.",
+          retryable: false,
+        });
+      }
+      const aggregate = aggregateCollectionProgress(record);
+      record.profile.collection = {
+        sourceCount: record.sourcePlans.length,
+        pageSize:
+          record.sourcePlans.length === 1 ? record.sourcePlans[0].pageSize : null,
+        totalRows: aggregate.totalRows,
+        totalPages: aggregate.totalPages,
+        sources: record.sourcePlans.map((sourcePlan) => ({
+          source: sourcePlan.source,
+          pageSize: sourcePlan.pageSize,
+          totalRows: sourcePlan.totalRows,
+          totalPages: sourcePlan.totalPages,
+        })),
+        protocolVersion: COLLECTION_PROTOCOL_VERSION,
+        ledgerMatchVersion: LEDGER_MATCH_VERSION,
+      };
+      record.profile.ledgerMatch = {
+        candidates: record.resolution.candidates,
+        managementPks: record.resolution.managementPks,
+        matchedAt: record.resolution.matchedAt,
+      };
+      record.status = "ready";
+      record.collectionState = null;
+      record.fetchedAt = new Date().toISOString();
     }
-    record.profile.collection = {
-      pageSize: record.pageSize,
-      totalRows: record.totalRows,
-      totalPages: record.totalPages,
-      protocolVersion: COLLECTION_PROTOCOL_VERSION,
-    };
-    record.status = "ready";
-    record.collectionState = null;
-    record.fetchedAt = new Date().toISOString();
   } else {
+    plan.status = "building";
     record.status = "building";
   }
 
+  syncLegacyProgress(record);
   return record;
+}
+
+async function ensureBuildingLedgerResolution(record, serviceKey, onRequest) {
+  if (
+    record.resolution?.status === "matched" &&
+    record.resolution.version === LEDGER_MATCH_VERSION &&
+    Array.isArray(record.sourcePlans) &&
+    record.sourcePlans.length
+  ) {
+    return;
+  }
+
+  const resolution = await resolveBuildingLedgerSources({
+    requestedSource: record.requestedSource || record.source,
+    metadata: {
+      ...(record.metadata || {}),
+      expectedHouseholds: record.expectedHouseholds,
+    },
+    fetchPage: (operation, source, pageNo, pageSize) =>
+      fetchBuildingLedgerPage(
+        serviceKey,
+        operation,
+        source,
+        pageNo,
+        pageSize,
+        onRequest
+      ),
+  });
+  record.resolution = resolution;
+  if (resolution.status !== "matched" || !resolution.sources.length) {
+    throw createCollectionError({
+      operation: "resolveBuildingLedgerSources",
+      pageNo: 1,
+      resultCode: "LEDGER_MATCH_NOT_FOUND",
+      resultMessage: resolution.reason || "동일 단지의 건축물대장을 찾지 못했습니다.",
+      retryable: false,
+    });
+  }
+
+  record.resolvedSources = resolution.sources;
+  record.sourcePlans = resolution.sources.map((source) => ({
+    source,
+    status: "pending",
+    pageSize: null,
+    pageSizeProbe: [],
+    nextPage: 1,
+    totalPages: null,
+    totalRows: null,
+    lastSuccessfulPage: 0,
+  }));
+  record.activeSourceIndex = 0;
+  activateSourcePlan(record, 0);
+}
+
+function activateSourcePlan(record, index) {
+  const plan = record.sourcePlans?.[index];
+  if (!plan) {
+    throw createCollectionError({
+      operation: BUILDING_AREA_OPERATION,
+      pageNo: 1,
+      resultCode: "MISSING_SOURCE_PLAN",
+      resultMessage: "건축물대장 조회 지번 계획이 비어 있습니다.",
+      retryable: false,
+    });
+  }
+  record.activeSourceIndex = index;
+  record.pageSize = plan.pageSize;
+  record.pageSizeProbe = plan.pageSizeProbe || [];
+  record.nextPage = plan.nextPage || 1;
+  record.totalPages = plan.totalPages;
+  record.totalRows = plan.totalRows;
+  record.lastSuccessfulPage = plan.lastSuccessfulPage || 0;
+  return plan;
+}
+
+function syncLegacyProgress(record) {
+  const plan = record.sourcePlans?.[record.activeSourceIndex];
+  if (plan) {
+    record.pageSize = plan.pageSize;
+    record.pageSizeProbe = plan.pageSizeProbe || [];
+    record.nextPage = plan.nextPage || 1;
+    record.totalPages = plan.totalPages;
+    record.totalRows = plan.totalRows;
+    record.lastSuccessfulPage = plan.lastSuccessfulPage || 0;
+  }
+}
+
+function aggregateCollectionProgress(record) {
+  const plans = Array.isArray(record.sourcePlans) ? record.sourcePlans : [];
+  return plans.reduce(
+    (aggregate, plan) => {
+      aggregate.completedPages += Math.max(0, Number(plan.lastSuccessfulPage) || 0);
+      aggregate.totalPages += Math.max(1, Number(plan.totalPages) || 1);
+      aggregate.totalRows += Math.max(0, Number(plan.totalRows) || 0);
+      return aggregate;
+    },
+    { completedPages: 0, totalPages: 0, totalRows: 0 }
+  );
 }
 
 async function negotiatePageSize(serviceKey, source, onRequest) {
@@ -275,6 +449,7 @@ async function negotiatePageSize(serviceKey, source, onRequest) {
     lastError.details.pageSizeProbe = probes;
   }
   throw lastError || createCollectionError({
+    operation: BUILDING_AREA_OPERATION,
     pageNo: 1,
     resultCode: "PAGE_SIZE_NEGOTIATION_FAILED",
     resultMessage: "건축HUB 페이지 크기를 결정하지 못했습니다.",
@@ -283,9 +458,27 @@ async function negotiatePageSize(serviceKey, source, onRequest) {
 }
 
 async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize, onRequest) {
+  return fetchBuildingLedgerPage(
+    serviceKey,
+    BUILDING_AREA_OPERATION,
+    source,
+    pageNo,
+    pageSize,
+    onRequest
+  );
+}
+
+async function fetchBuildingLedgerPage(
+  serviceKey,
+  operation,
+  source,
+  pageNo,
+  pageSize,
+  onRequest
+) {
   const url = buildBuildingHubUrl({
     serviceKey,
-    operation: BUILDING_AREA_OPERATION,
+    operation,
     params: {
       ...source,
       pageNo: String(pageNo),
@@ -297,7 +490,7 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize, onReq
   let responseText = "";
   try {
     onRequest?.({
-      operation: BUILDING_AREA_OPERATION,
+      operation,
       pageNo,
       pageSize,
     });
@@ -309,6 +502,7 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize, onReq
   } catch (error) {
     const isTimeout = error?.name === "TimeoutError" || error?.name === "AbortError";
     throw createCollectionError({
+      operation,
       pageNo,
       upstreamStatus: null,
       resultCode: isTimeout ? "TIMEOUT" : "NETWORK_ERROR",
@@ -332,6 +526,7 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize, onReq
 
   if (!response.ok) {
     throw createCollectionError({
+      operation,
       pageNo,
       upstreamStatus: response.status,
       resultCode: resultCode || `HTTP_${response.status}`,
@@ -342,6 +537,7 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize, onReq
 
   if (!payload) {
     throw createCollectionError({
+      operation,
       pageNo,
       upstreamStatus: response.status,
       resultCode: "INVALID_RESPONSE",
@@ -352,6 +548,7 @@ async function fetchBuildingAreaPage(serviceKey, source, pageNo, pageSize, onReq
 
   if (resultCode && !["00", "000"].includes(resultCode)) {
     throw createCollectionError({
+      operation,
       pageNo,
       upstreamStatus: response.status,
       resultCode,
@@ -382,11 +579,16 @@ function profileResponse(record, storage) {
 }
 
 function progressResponse(record, storage, status = 202) {
-  const totalPages = Math.max(0, Number(record.totalPages) || 0);
-  const completedPages = Math.max(
-    0,
-    Number(record.lastSuccessfulPage) || (Number(record.nextPage) || 1) - 1
-  );
+  const aggregate = aggregateCollectionProgress(record);
+  const totalPages = record.sourcePlans?.length
+    ? aggregate.totalPages
+    : Math.max(0, Number(record.totalPages) || 0);
+  const completedPages = record.sourcePlans?.length
+    ? aggregate.completedPages
+    : Math.max(
+        0,
+        Number(record.lastSuccessfulPage) || (Number(record.nextPage) || 1) - 1
+      );
   const currentPage = Number(record.failedPage || record.nextPage) || 1;
   const nextRetryTimestamp = Date.parse(record.nextRetryAt || "");
   const retryAfterMs =
@@ -401,8 +603,15 @@ function progressResponse(record, storage, status = 202) {
       progress: totalPages ? Math.min(100, Math.round((completedPages / totalPages) * 100)) : 0,
       completedPages,
       totalPages,
-      totalRows: Math.max(0, Number(record.totalRows) || 0),
+      totalRows: record.sourcePlans?.length
+        ? aggregate.totalRows
+        : Math.max(0, Number(record.totalRows) || 0),
       currentPage,
+      stage: record.resolution?.status === "matched" ? "area-collection" : "ledger-matching",
+      resolvedSourceCount: Array.isArray(record.resolvedSources)
+        ? record.resolvedSources.length
+        : 0,
+      activeSourceIndex: Math.max(0, Number(record.activeSourceIndex) || 0),
       pageSize: positiveInteger(record.pageSize),
       pageSizeProbe: Array.isArray(record.pageSizeProbe) ? record.pageSizeProbe : [],
       processedUnits: Number(record.collectionState?.processedUnits) || 0,
@@ -441,6 +650,7 @@ export function pauseRecord(record) {
   record.status = "paused";
   record.consecutiveFailures = failures;
   record.nextRetryAt = new Date(Date.now() + RETRY_BACKOFF_MILLISECONDS[delayIndex]).toISOString();
+  persistActivePlanProgress(record);
 }
 
 function downgradePageSize(record) {
@@ -474,11 +684,38 @@ function downgradePageSize(record) {
       status: "downgraded-after-retries",
     },
   ];
+  persistActivePlanProgress(record);
   return true;
 }
 
 export function resumeRecord(record) {
   record.status = "building";
+  record.nextRetryAt = "";
+  record.leaseUntil = "";
+}
+
+export function markUpstreamPending(record, details) {
+  record.status = "upstream-pending";
+  record.nextRetryAt = new Date(Date.now() + UPSTREAM_RECHECK_MILLISECONDS).toISOString();
+  record.errorDetails = details;
+  record.error =
+    "건축HUB에서 동일 단지의 표제부를 아직 찾지 못했습니다. 30일 후 자동으로 다시 확인합니다.";
+  record.leaseUntil = "";
+}
+
+export function resetResolution(record) {
+  record.status = "building";
+  record.resolution = null;
+  record.resolvedSources = [];
+  record.sourcePlans = [];
+  record.activeSourceIndex = 0;
+  record.pageSize = null;
+  record.pageSizeProbe = [];
+  record.nextPage = 1;
+  record.totalPages = null;
+  record.totalRows = null;
+  record.lastSuccessfulPage = 0;
+  record.collectionState = createCollectionState();
   record.nextRetryAt = "";
   record.leaseUntil = "";
 }
@@ -494,7 +731,7 @@ export function clearCollectionError(record) {
 function createCollectionError(details) {
   const error = new Error(details.resultMessage || "건축HUB 공급면적 수집 실패");
   error.details = {
-    operation: BUILDING_AREA_OPERATION,
+    operation: details.operation || BUILDING_AREA_OPERATION,
     pageNo: positiveInteger(details.pageNo) || 1,
     upstreamStatus: positiveInteger(details.upstreamStatus),
     resultCode: String(details.resultCode || ""),
@@ -508,6 +745,7 @@ export function normalizeErrorDetails(error, pageNo) {
   return (
     error?.details ||
     createCollectionError({
+      operation: BUILDING_AREA_OPERATION,
       pageNo,
       resultCode: "UNKNOWN_ERROR",
       resultMessage: error?.message || "건축HUB 공급면적 수집 실패",
@@ -518,9 +756,25 @@ export function normalizeErrorDetails(error, pageNo) {
 
 export function formatCollectionError(details) {
   const status = details.upstreamStatus ? `HTTP ${details.upstreamStatus}` : details.resultCode;
-  return `건축HUB ${details.pageNo}페이지 조회 지연 (${status}): ${
+  const stage =
+    details.operation === "resolveBuildingLedgerSources"
+      ? "동일 단지 탐색"
+      : `${details.pageNo}페이지 조회`;
+  return `건축HUB ${stage} 지연 (${status}): ${
     details.resultMessage || "상세 메시지 없음"
   }`;
+}
+
+function persistActivePlanProgress(record) {
+  const plan = record.sourcePlans?.[record.activeSourceIndex];
+  if (!plan) return;
+  plan.pageSize = record.pageSize;
+  plan.pageSizeProbe = record.pageSizeProbe || [];
+  plan.nextPage = record.nextPage || 1;
+  plan.totalPages = record.totalPages;
+  plan.totalRows = record.totalRows;
+  plan.lastSuccessfulPage = record.lastSuccessfulPage || 0;
+  plan.status = record.status;
 }
 
 function resolvePageSize(returnedPageSize, requestedPageSize) {

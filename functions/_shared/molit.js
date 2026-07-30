@@ -88,13 +88,20 @@ export function buildBuildingHubUrl({ serviceKey, operation, params }) {
   url.searchParams.set("serviceKey", serviceKey);
   url.searchParams.set("sigunguCd", params.sigunguCd);
   url.searchParams.set("bjdongCd", params.bjdongCd);
-  url.searchParams.set("platGbCd", params.platGbCd || "0");
-  url.searchParams.set("bun", params.bun);
-  url.searchParams.set("ji", params.ji);
+  setOptionalSearchParam(url, "platGbCd", params.platGbCd);
+  setOptionalSearchParam(url, "bun", params.bun);
+  setOptionalSearchParam(url, "ji", params.ji);
+  setOptionalSearchParam(url, "startDate", params.startDate);
+  setOptionalSearchParam(url, "endDate", params.endDate);
   url.searchParams.set("_type", "json");
   url.searchParams.set("numOfRows", params.numOfRows || "100");
   url.searchParams.set("pageNo", params.pageNo || "1");
   return url;
+}
+
+function setOptionalSearchParam(url, key, value) {
+  const normalized = String(value ?? "").trim();
+  if (normalized) url.searchParams.set(key, normalized);
 }
 
 export function buildRtmsUrl({ serviceKey, lawdCd, dealYmd, pageNo = "1", numOfRows = "1000" }) {

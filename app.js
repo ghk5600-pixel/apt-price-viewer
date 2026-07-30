@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.07.29-01-rc.3";
+const APP_VERSION = "v2026.07.30-01-rc.2";
 const APP_UPDATED_AT = "2026-07-29";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
@@ -1626,7 +1626,7 @@ async function pollSupplyProfile(complex, params) {
       return;
     }
 
-    if (payload.status === "failed") {
+    if (payload.status === "failed" || payload.status === "upstream-pending") {
       throw new Error(payload.error || "건축HUB 공급면적 수집에 실패했습니다.");
     }
     if (!response.ok && response.status !== 202) {
@@ -1657,6 +1657,10 @@ function buildSupplyProfileRequestUrl(complex, params) {
   url.searchParams.set("platGbCd", params.platGbCd);
   url.searchParams.set("bun", params.bun);
   url.searchParams.set("ji", params.ji);
+  url.searchParams.set("complexName", complex.kaptName || complex.name || "");
+  url.searchParams.set("roadAddress", complex.address || "");
+  url.searchParams.set("lotAddress", complex.jibunAddress || complex.address || "");
+  url.searchParams.set("approvalDate", complex.approvalDate || "");
   if (Number(complex.households) > 0) {
     url.searchParams.set("expectedHouseholds", String(Math.round(Number(complex.households))));
   }
@@ -1673,6 +1677,9 @@ function formatSupplyProfileProgressMessage(payload, complex) {
     : "페이지 크기 확인";
   const pageSize = Number(payload.pageSize) > 0 ? ` · ${formatNumber(payload.pageSize)}행 단위` : "";
 
+  if (payload.stage === "ledger-matching") {
+    return "건축HUB에서 단지명과 관련 지번을 확인하는 중";
+  }
   if (payload.status === "paused") {
     const seconds = Math.max(1, Math.ceil((Number(payload.retryAfterMs) || 0) / 1000));
     const status = payload.errorDetails?.upstreamStatus
