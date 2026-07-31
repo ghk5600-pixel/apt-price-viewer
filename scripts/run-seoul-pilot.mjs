@@ -49,7 +49,7 @@ let completedCount = 0;
 let stoppedReason = "";
 
 const report = {
-  version: "v2026.07.31-01-rc.1",
+  version: "v2026.07.31-01-rc.2",
   runId,
   scope: {
     region: "서울특별시",
@@ -77,6 +77,7 @@ const report = {
     exclusions: {},
     errors: [],
     reusedExistingCatalog: false,
+    reusedCandidateCatalog: false,
     tradeVerification: {
       districts: 0,
       requestedMonths: 0,
@@ -156,43 +157,17 @@ async function buildCatalogWhenNeeded() {
     return;
   }
 
-  assertBudget("법정동 목록 다운로드 전");
-  console.log("서울 법정동 목록을 내려받는 중입니다.");
-  const legalDongResponse = await fetch(
-    process.env.LEGAL_DONG_CSV_URL || LEGAL_DONG_CSV_URL,
-    { signal: AbortSignal.timeout(30_000) }
-  );
-  if (!legalDongResponse.ok) {
-    throw new Error(`법정동 CSV 다운로드 실패: HTTP ${legalDongResponse.status}`);
-  }
-  const legalDongs = selectSeoulLegalDongs(parseCsv(await legalDongResponse.text()));
-  report.catalog.sourceLegalDongs = legalDongs.length;
-  console.log(`서울 법정동 ${legalDongs.length}개에서 K-apt 단지를 찾습니다.`);
-
-  const candidatesByCode = new Map();
-  for (const legalDong of legalDongs) {
-    if (!hasBudget()) {
-      stoppedReason = "catalog-budget-exhausted";
-      break;
-    }
-    try {
-      const candidates = await molit.fetchAptListForDong(legalDong.bjdCode);
-      for (const candidate of candidates) {
-        if (candidate.kaptCode && !candidatesByCode.has(candidate.kaptCode)) {
-          candidatesByCode.set(candidate.kaptCode, candidate);
-        }
-      }
-    } catch (error) {
-      report.catalog.errors.push({
-        stage: "apt-list",
-        bjdCode: legalDong.bjdCode,
-        message: error.message,
-      });
-    }
-  }
-
-  const candidates = [...candidatesByCode.values()];
+  const seedCatalog = config.refreshCatalog ? [] : await d1.listCatalog();
+  const candidates = seedCatalog.length
+    ? seedCatalog.map(catalogRowToCandidate)
+    : await discoverSeoulCandidates();
+  report.catalog.reusedCandidateCatalog = seedCatalog.length > 0;
   report.catalog.discoveredComplexes = candidates.length;
+  if (seedCatalog.length) {
+    console.log(
+      `기존 서울 후보 카탈로그 ${seedCatalog.length}개에 새 선정 규칙을 적용합니다.`
+    );
+  }
   console.log(`K-apt 단지 ${candidates.length}개의 기본정보를 확인합니다.`);
   const catalogResults = await mapWithConcurrency(candidates, 4, async (candidate) => {
     if (!hasBudget()) return null;
@@ -230,6 +205,44 @@ async function buildCatalogWhenNeeded() {
   report.catalog.eligibleComplexes = eligible.length;
   await d1.replaceCatalog(eligible, PILOT_CATALOG_VERSION);
   console.log(`시험 대상 ${eligible.length}개 단지를 D1 카탈로그에 저장했습니다.`);
+}
+
+async function discoverSeoulCandidates() {
+  assertBudget("법정동 목록 다운로드 전");
+  console.log("서울 법정동 목록을 내려받는 중입니다.");
+  const legalDongResponse = await fetch(
+    process.env.LEGAL_DONG_CSV_URL || LEGAL_DONG_CSV_URL,
+    { signal: AbortSignal.timeout(30_000) }
+  );
+  if (!legalDongResponse.ok) {
+    throw new Error(`법정동 CSV 다운로드 실패: HTTP ${legalDongResponse.status}`);
+  }
+  const legalDongs = selectSeoulLegalDongs(parseCsv(await legalDongResponse.text()));
+  report.catalog.sourceLegalDongs = legalDongs.length;
+  console.log(`서울 법정동 ${legalDongs.length}개에서 K-apt 단지를 찾습니다.`);
+
+  const candidatesByCode = new Map();
+  for (const legalDong of legalDongs) {
+    if (!hasBudget()) {
+      stoppedReason = "catalog-budget-exhausted";
+      break;
+    }
+    try {
+      const candidates = await molit.fetchAptListForDong(legalDong.bjdCode);
+      for (const candidate of candidates) {
+        if (candidate.kaptCode && !candidatesByCode.has(candidate.kaptCode)) {
+          candidatesByCode.set(candidate.kaptCode, candidate);
+        }
+      }
+    } catch (error) {
+      report.catalog.errors.push({
+        stage: "apt-list",
+        bjdCode: legalDong.bjdCode,
+        message: error.message,
+      });
+    }
+  }
+  return [...candidatesByCode.values()];
 }
 
 async function collectProfiles() {
@@ -480,6 +493,18 @@ function catalogRowToRequest(row) {
       approvalDate: String(row.approval_date || ""),
     }),
     expectedHouseholds: Number(row.households) || null,
+  };
+}
+
+function catalogRowToCandidate(row) {
+  return {
+    kaptCode: String(row.kapt_code || ""),
+    kaptName: String(row.complex_name || ""),
+    bjdCode: String(row.bjd_code || ""),
+    as1: String(row.sido_name || ""),
+    as2: String(row.sigungu_name || ""),
+    as3: String(row.eupmyeondong_name || ""),
+    as4: "",
   };
 }
 

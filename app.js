@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.07.31-01-rc.1";
+const APP_VERSION = "v2026.07.31-01-rc.2";
 const APP_UPDATED_AT = "2026-07-29";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
