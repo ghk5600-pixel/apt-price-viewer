@@ -128,7 +128,11 @@ export function createD1RestClient({
       return Number(result.results?.[0]?.count || 0);
     },
 
-    async replaceCatalog(entries, catalogVersion) {
+    async replaceCatalog(
+      entries,
+      catalogVersion,
+      { purgeRunScope = "" } = {}
+    ) {
       const sql = `INSERT INTO supply_batch_catalog (
           complex_key, kapt_code, complex_name, bjd_code, sido_name, sigungu_name,
           eupmyeondong_name, apartment_type, sale_type, approval_date, households,
@@ -199,15 +203,38 @@ export function createD1RestClient({
           updatedAt,
         ]);
       }
-      await query(
-        `DELETE FROM supply_profile_cache
-         WHERE complex_key IN (
-           SELECT complex_key
-           FROM supply_batch_catalog
-           WHERE catalog_version <> ?1
-         )`,
-        [catalogVersion]
-      );
+      if (purgeRunScope) {
+        await query(
+          `DELETE FROM supply_profile_cache
+           WHERE complex_key NOT IN (
+             SELECT complex_key
+             FROM supply_batch_catalog
+             WHERE catalog_version = ?1
+           )
+           AND complex_key IN (
+             SELECT complex_key
+             FROM supply_batch_catalog
+             WHERE catalog_version <> ?1
+             UNION
+             SELECT json_extract(result.value, '$.complexKey')
+             FROM supply_batch_runs AS batch_run,
+                  json_each(batch_run.report_json, '$.collection.results') AS result
+             WHERE batch_run.scope = ?2
+               AND json_extract(result.value, '$.complexKey') IS NOT NULL
+           )`,
+          [catalogVersion, purgeRunScope]
+        );
+      } else {
+        await query(
+          `DELETE FROM supply_profile_cache
+           WHERE complex_key IN (
+             SELECT complex_key
+             FROM supply_batch_catalog
+             WHERE catalog_version <> ?1
+           )`,
+          [catalogVersion]
+        );
+      }
       await query(
         "DELETE FROM supply_batch_catalog WHERE catalog_version <> ?1",
         [catalogVersion]

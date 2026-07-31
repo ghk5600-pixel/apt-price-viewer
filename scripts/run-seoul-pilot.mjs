@@ -29,6 +29,7 @@ import {
 const LEGAL_DONG_CSV_URL =
   "https://www.data.go.kr/cmm/cmm/fileDownload.do" +
   "?atchFileId=FILE_000000003676587&fileDetailSn=1&insertDataPrcus=N";
+const PILOT_SCOPE = "seoul-sale-apartment-built-from-2020-households-200";
 const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
 
 const config = {
@@ -51,7 +52,7 @@ let completedCount = 0;
 let stoppedReason = "";
 
 const report = {
-  version: "v2026.07.31-01-rc.4",
+  version: "v2026.07.31-01-rc.5",
   runId,
   scope: {
     region: "서울특별시",
@@ -253,7 +254,9 @@ async function buildCatalogWhenNeeded() {
   }
   const eligible = sortPilotCatalog(finalResults.filter((result) => result.eligible));
   report.catalog.eligibleComplexes = eligible.length;
-  await d1.replaceCatalog(eligible, PILOT_CATALOG_VERSION);
+  await d1.replaceCatalog(eligible, PILOT_CATALOG_VERSION, {
+    purgeRunScope: PILOT_SCOPE,
+  });
   console.log(`시험 대상 ${eligible.length}개 단지를 D1 카탈로그에 저장했습니다.`);
 }
 
@@ -668,7 +671,7 @@ function assertBudget(stage) {
 async function saveRun(status) {
   await d1.saveRun({
     runId,
-    scope: "seoul-sale-apartment-built-from-2020-households-200",
+    scope: PILOT_SCOPE,
     mode: config.mode,
     status,
     catalogCount: report.catalog.eligibleComplexes,

@@ -226,7 +226,10 @@ test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 �
         discoveredAt: "2026-07-31T00:00:00.000Z",
       },
     ],
-    "seoul-sale-apartment-v2"
+    "seoul-sale-apartment-v2",
+    {
+      purgeRunScope: "seoul-sale-apartment-built-from-2020-households-200",
+    }
   );
 
   assert.equal(calls.length, 3);
@@ -234,7 +237,11 @@ test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 �
   assert.equal(calls[0].params[8], "분양");
   assert.equal(calls[0].params[20], "seoul-sale-apartment-v2");
   assert.match(calls[1].sql, /DELETE FROM supply_profile_cache/);
-  assert.deepEqual(calls[1].params, ["seoul-sale-apartment-v2"]);
+  assert.match(calls[1].sql, /json_each/);
+  assert.deepEqual(calls[1].params, [
+    "seoul-sale-apartment-v2",
+    "seoul-sale-apartment-built-from-2020-households-200",
+  ]);
   assert.match(calls[2].sql, /DELETE FROM supply_batch_catalog/);
 });
 

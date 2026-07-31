@@ -3,7 +3,7 @@ export const PILOT_APPROVAL_DATE = "20200101";
 export const PILOT_MIN_HOUSEHOLDS = 200;
 export const PILOT_TRADE_LOOKBACK_MONTHS = 24;
 export const PILOT_CATALOG_VERSION =
-  "seoul-sale-apartment-v4-building-purpose-cache-purge";
+  "seoul-sale-apartment-v5-history-cache-purge";
 
 const EXCLUDED_HOUSING_MARKERS = [
   "도시형생활주택",
