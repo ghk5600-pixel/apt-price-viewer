@@ -268,21 +268,90 @@ test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 �
     ],
     "seoul-sale-apartment-v2",
     {
-      purgeRunScope: "seoul-sale-apartment-built-from-2020-households-200",
+      catalogScope: "seoul-sale-apartment-20200101-20291231-households-200",
     }
   );
 
   assert.equal(calls.length, 3);
-  assert.equal(calls[0].params.length, 26);
-  assert.equal(calls[0].params[8], "분양");
-  assert.equal(calls[0].params[20], "seoul-sale-apartment-v2");
-  assert.match(calls[1].sql, /DELETE FROM supply_profile_cache/);
-  assert.match(calls[1].sql, /json_each/);
-  assert.deepEqual(calls[1].params, [
+  assert.match(calls[0].sql, /SELECT complex_key/);
+  assert.deepEqual(calls[0].params, [
+    "seoul-sale-apartment-20200101-20291231-households-200",
     "seoul-sale-apartment-v2",
-    "seoul-sale-apartment-built-from-2020-households-200",
   ]);
-  assert.match(calls[2].sql, /DELETE FROM supply_batch_catalog/);
+  assert.match(calls[1].sql, /DELETE FROM supply_batch_catalog/);
+  assert.doesNotMatch(calls[1].sql, /catalog_version <>/);
+  assert.equal(calls[2].params.length, 27);
+  assert.equal(calls[2].params[8], "분양");
+  assert.equal(calls[2].params[20], "seoul-sale-apartment-v2");
+  assert.equal(
+    calls[2].params[21],
+    "seoul-sale-apartment-20200101-20291231-households-200"
+  );
+});
+
+test("연대별 카탈로그 교체는 해당 범위에서 빠진 공급면적 캐시만 정리한다", async () => {
+  const calls = [];
+  const client = createD1RestClient({
+    accountId: "account-id",
+    databaseId: "database-id",
+    apiToken: "api-token",
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body);
+      calls.push(request);
+      const results = /SELECT complex_key/.test(request.sql)
+        ? [{ complex_key: "aptlist-old" }, { complex_key: "aptlist-keep" }]
+        : [];
+      return new Response(
+        JSON.stringify({ success: true, result: [{ success: true, results }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    },
+  });
+
+  await client.replaceCatalog(
+    [
+      {
+        complexKey: "aptlist-keep",
+        kaptCode: "A-KEEP",
+        complexName: "유지 단지",
+        bjdCode: "1168010300",
+        sidoName: "서울특별시",
+        sigunguName: "강남구",
+        eupmyeondongName: "개포동",
+        apartmentType: "아파트",
+        saleType: "분양",
+        approvalDate: "20150101",
+        households: 500,
+        buildingCount: 5,
+        lotAddress: "서울특별시 강남구 개포동 12-3",
+        roadAddress: "",
+        platGbCd: "0",
+        bun: "0012",
+        ji: "0003",
+        tradeMatchCount: 1,
+        tradeMatchMethod: "name",
+        lastTradeDate: "20260701",
+        buildingPurpose: "공동주택 / 아파트",
+        buildingPurposeVerified: true,
+        priorityRank: 1,
+        discoveredAt: "2026-07-31T00:00:00.000Z",
+      },
+    ],
+    "seoul-sale-apartment-v8-20100101-20191231",
+    {
+      catalogScope: "seoul-sale-apartment-20100101-20191231-households-200",
+    }
+  );
+
+  const catalogDelete = calls.find((call) =>
+    /DELETE FROM supply_batch_catalog/.test(call.sql)
+  );
+  const cacheDelete = calls.find((call) =>
+    /DELETE FROM supply_profile_cache/.test(call.sql)
+  );
+  assert.ok(catalogDelete);
+  assert.doesNotMatch(catalogDelete.sql, /catalog_version <>/);
+  assert.deepEqual(JSON.parse(cacheDelete.params[0]), ["aptlist-old"]);
 });
 
 function apiResponse(body) {

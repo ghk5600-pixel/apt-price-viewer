@@ -16,6 +16,16 @@ on:
       - "package.json"
   workflow_dispatch:
     inputs:
+      approval_from:
+        description: "준공일 시작일(YYYYMMDD)"
+        required: true
+        default: "20200101"
+        type: string
+      approval_to:
+        description: "준공일 종료일(YYYYMMDD)"
+        required: true
+        default: "20291231"
+        type: string
       mode:
         description: "실행 단계"
         required: true
@@ -72,6 +82,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      PILOT_APPROVAL_FROM: ${{ inputs.approval_from || '20200101' }}
+      PILOT_APPROVAL_TO: ${{ inputs.approval_to || '20291231' }}
       PILOT_MODE: ${{ inputs.mode || 'catalog-and-collect' }}
       PILOT_MAX_COMPLEXES: ${{ inputs.max_complexes || '500' }}
       PILOT_MAX_ATTEMPTS: ${{ inputs.max_attempts || '500' }}
@@ -80,6 +92,8 @@ jobs:
       PILOT_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
       PILOT_REFRESH_CATALOG: ${{ inputs.refresh_catalog && '1' || '0' }}
       PILOT_REPORT_PATH: seoul-pilot-report.json
+      PILOT_REPORT_HTML_PATH: seoul-pilot-report.html
+      PILOT_REPORT_CSV_PATH: seoul-pilot-report.csv
 
     steps:
       - name: Checkout
@@ -100,7 +114,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: seoul-supply-pilot-${{ github.run_number }}
-          path: seoul-pilot-report.json
+          name: seoul-supply-${{ inputs.approval_from || '20200101' }}-${{ inputs.approval_to || '20291231' }}-${{ github.run_number }}
+          path: |
+            seoul-pilot-report.json
+            seoul-pilot-report.html
+            seoul-pilot-report.csv
           if-no-files-found: warn
           retention-days: 14

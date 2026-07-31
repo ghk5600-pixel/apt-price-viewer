@@ -60,7 +60,7 @@ test("2020년 이후 200세대 이상 아파트와 주상복합을 시험 대상
   assert.equal(included.households, 200);
 
   const old = buildPilotCatalogEntry(candidate, { ...base, kaptUsedate: "20191231" });
-  assert.deepEqual(old.exclusionReasons, ["built-before-2020"]);
+  assert.deepEqual(old.exclusionReasons, ["built-before-target-range"]);
 
   const small = buildPilotCatalogEntry(candidate, { ...base, kaptdaCnt: "199" });
   assert.deepEqual(small.exclusionReasons, ["under-200-households"]);
@@ -70,6 +70,53 @@ test("2020년 이후 200세대 이상 아파트와 주상복합을 시험 대상
     codeAptNm: "오피스텔",
   });
   assert.deepEqual(nonApartment.exclusionReasons, ["unsupported-housing-type"]);
+});
+
+test("2010년대 준공 범위를 시작일과 종료일로 제한한다", () => {
+  const candidate = {
+    kaptCode: "A10000002",
+    kaptName: "서울 2010년대 단지",
+    bjdCode: "1168010300",
+    as1: "서울특별시",
+    as2: "강남구",
+    as3: "개포동",
+  };
+  const base = {
+    ...candidate,
+    kaptdaCnt: "300",
+    kaptDongCnt: "3",
+    codeAptNm: "아파트",
+    codeSaleNm: "분양",
+    kaptAddr: "서울특별시 강남구 개포동 12-3",
+    doroJuso: "서울특별시 강남구 서울로 1",
+  };
+  const options = {
+    approvalDateFrom: "20100101",
+    approvalDateTo: "20191231",
+  };
+
+  const included = buildPilotCatalogEntry(
+    candidate,
+    { ...base, kaptUsedate: "20150630" },
+    "2026-07-31T00:00:00.000Z",
+    options
+  );
+  const older = buildPilotCatalogEntry(
+    candidate,
+    { ...base, kaptUsedate: "20091231" },
+    "2026-07-31T00:00:00.000Z",
+    options
+  );
+  const newer = buildPilotCatalogEntry(
+    candidate,
+    { ...base, kaptUsedate: "20200101" },
+    "2026-07-31T00:00:00.000Z",
+    options
+  );
+
+  assert.equal(included.eligible, true);
+  assert.deepEqual(older.exclusionReasons, ["built-before-target-range"]);
+  assert.deepEqual(newer.exclusionReasons, ["built-after-target-range"]);
 });
 
 test("도시형 생활주택과 임대형 공동주택을 시험 대상에서 제외한다", () => {

@@ -32,6 +32,7 @@ const PILOT_SCHEMA = [
     building_purpose TEXT NOT NULL DEFAULT '',
     building_purpose_verified INTEGER NOT NULL DEFAULT 0,
     catalog_version TEXT NOT NULL DEFAULT '',
+    catalog_scope TEXT NOT NULL DEFAULT '',
     priority_rank INTEGER NOT NULL,
     profile_status TEXT NOT NULL DEFAULT 'pending',
     profile_calculation_version TEXT NOT NULL DEFAULT '',
@@ -115,7 +116,12 @@ export function createD1RestClient({
         building_purpose: "TEXT NOT NULL DEFAULT ''",
         building_purpose_verified: "INTEGER NOT NULL DEFAULT 0",
         catalog_version: "TEXT NOT NULL DEFAULT ''",
+        catalog_scope: "TEXT NOT NULL DEFAULT ''",
       });
+      await query(
+        `CREATE INDEX IF NOT EXISTS idx_supply_batch_catalog_scope
+         ON supply_batch_catalog (catalog_scope, priority_rank)`
+      );
     },
 
     async getCatalogCount(catalogVersion = "") {
@@ -131,20 +137,36 @@ export function createD1RestClient({
     async replaceCatalog(
       entries,
       catalogVersion,
-      { purgeRunScope = "" } = {}
+      { catalogScope = "" } = {}
     ) {
+      const previous = await query(
+        `SELECT complex_key FROM supply_batch_catalog
+         WHERE catalog_scope = ?1
+            OR (catalog_scope = '' AND catalog_version = ?2)`,
+        [catalogScope, catalogVersion]
+      );
+      const previousKeys = new Set(
+        (previous.results || []).map((row) => String(row.complex_key || ""))
+      );
+      await query(
+        `DELETE FROM supply_batch_catalog
+         WHERE catalog_scope = ?1
+            OR (catalog_scope = '' AND catalog_version = ?2)`,
+        [catalogScope, catalogVersion]
+      );
+
       const sql = `INSERT INTO supply_batch_catalog (
           complex_key, kapt_code, complex_name, bjd_code, sido_name, sigungu_name,
           eupmyeondong_name, apartment_type, sale_type, approval_date, households,
           building_count, lot_address, road_address, plat_gb_cd, bun, ji,
           trade_match_count, trade_match_method, last_trade_date, catalog_version,
-          building_purpose, building_purpose_verified, priority_rank,
+          catalog_scope, building_purpose, building_purpose_verified, priority_rank,
           profile_status, profile_calculation_version, attempt_count, last_error,
           discovered_at, updated_at
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-          ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 'pending', '', 0, '',
-          ?25, ?26
+          ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, 'pending', '', 0, '',
+          ?26, ?27
         )
         ON CONFLICT(complex_key) DO UPDATE SET
           kapt_code = excluded.kapt_code,
@@ -169,6 +191,7 @@ export function createD1RestClient({
           building_purpose = excluded.building_purpose,
           building_purpose_verified = excluded.building_purpose_verified,
           catalog_version = excluded.catalog_version,
+          catalog_scope = excluded.catalog_scope,
           priority_rank = excluded.priority_rank,
           discovered_at = excluded.discovered_at,
           updated_at = excluded.updated_at`;
@@ -196,6 +219,7 @@ export function createD1RestClient({
           entry.tradeMatchMethod,
           entry.lastTradeDate,
           catalogVersion,
+          catalogScope,
           entry.buildingPurpose,
           entry.buildingPurposeVerified ? 1 : 0,
           entry.priorityRank,
@@ -203,52 +227,32 @@ export function createD1RestClient({
           updatedAt,
         ]);
       }
-      if (purgeRunScope) {
+
+      const currentKeys = new Set(entries.map((entry) => entry.complexKey));
+      const staleKeys = [...previousKeys].filter(
+        (complexKey) => complexKey && !currentKeys.has(complexKey)
+      );
+      if (staleKeys.length) {
         await query(
           `DELETE FROM supply_profile_cache
-           WHERE complex_key NOT IN (
-             SELECT complex_key
-             FROM supply_batch_catalog
-             WHERE catalog_version = ?1
-           )
-           AND complex_key IN (
-             SELECT complex_key
-             FROM supply_batch_catalog
-             WHERE catalog_version <> ?1
-             UNION
-             SELECT json_extract(result.value, '$.complexKey')
-             FROM supply_batch_runs AS batch_run,
-                  json_each(batch_run.report_json, '$.collection.results') AS result
-             WHERE batch_run.scope = ?2
-               AND json_extract(result.value, '$.complexKey') IS NOT NULL
-           )`,
-          [catalogVersion, purgeRunScope]
-        );
-      } else {
-        await query(
-          `DELETE FROM supply_profile_cache
-           WHERE complex_key IN (
-             SELECT complex_key
-             FROM supply_batch_catalog
-             WHERE catalog_version <> ?1
-           )`,
-          [catalogVersion]
+           WHERE complex_key IN (SELECT value FROM json_each(?1))`,
+          [JSON.stringify(staleKeys)]
         );
       }
-      await query(
-        "DELETE FROM supply_batch_catalog WHERE catalog_version <> ?1",
-        [catalogVersion]
-      );
     },
 
     async listCatalog(catalogVersion = "") {
-      const result = await query(
-        `SELECT * FROM supply_batch_catalog
-         WHERE sido_name = '서울특별시' AND approval_date >= '20200101'
-           AND (?1 = '' OR catalog_version = ?1)
-         ORDER BY priority_rank ASC`,
-        [catalogVersion]
-      );
+      const result = catalogVersion
+        ? await query(
+            `SELECT * FROM supply_batch_catalog
+             WHERE catalog_version = ?1
+             ORDER BY priority_rank ASC`,
+            [catalogVersion]
+          )
+        : await query(
+            `SELECT * FROM supply_batch_catalog
+             ORDER BY catalog_scope ASC, priority_rank ASC`
+          );
       return result.results || [];
     },
 

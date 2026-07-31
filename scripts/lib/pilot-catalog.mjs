@@ -1,9 +1,17 @@
 export const PILOT_SIDO_NAME = "서울특별시";
-export const PILOT_APPROVAL_DATE = "20200101";
+export const PILOT_APPROVAL_DATE_FROM = "20200101";
+export const PILOT_APPROVAL_DATE_TO = "20291231";
 export const PILOT_MIN_HOUSEHOLDS = 200;
 export const PILOT_TRADE_LOOKBACK_MONTHS = 24;
 export const PILOT_CATALOG_VERSION =
-  "seoul-sale-apartment-v7-apartment-unit-filter";
+  "seoul-sale-apartment-v8-decade-report";
+
+export function buildPilotCatalogVersion(
+  approvalDateFrom = PILOT_APPROVAL_DATE_FROM,
+  approvalDateTo = PILOT_APPROVAL_DATE_TO
+) {
+  return `${PILOT_CATALOG_VERSION}-${approvalDateFrom}-${approvalDateTo}`;
+}
 
 const EXCLUDED_HOUSING_MARKERS = [
   "도시형생활주택",
@@ -76,7 +84,15 @@ export function selectSeoulLegalDongs(records) {
     .sort((left, right) => left.bjdCode.localeCompare(right.bjdCode));
 }
 
-export function buildPilotCatalogEntry(candidate, basicInfo, discoveredAt = new Date().toISOString()) {
+export function buildPilotCatalogEntry(
+  candidate,
+  basicInfo,
+  discoveredAt = new Date().toISOString(),
+  {
+    approvalDateFrom = PILOT_APPROVAL_DATE_FROM,
+    approvalDateTo = PILOT_APPROVAL_DATE_TO,
+  } = {}
+) {
   const kaptCode = String(basicInfo.kaptCode || candidate.kaptCode || "").trim();
   const bjdCode = String(basicInfo.bjdCode || candidate.bjdCode || "").trim();
   const approvalDate = normalizeYmd(basicInfo.kaptUsedate);
@@ -90,7 +106,12 @@ export function buildPilotCatalogEntry(candidate, basicInfo, discoveredAt = new 
   const exclusionReasons = [];
   if (!kaptCode) exclusionReasons.push("missing-kapt-code");
   if (!/^11\d{8}$/.test(bjdCode)) exclusionReasons.push("not-seoul");
-  if (approvalDate < PILOT_APPROVAL_DATE) exclusionReasons.push("built-before-2020");
+  if (approvalDate < approvalDateFrom) {
+    exclusionReasons.push("built-before-target-range");
+  }
+  if (approvalDate > approvalDateTo) {
+    exclusionReasons.push("built-after-target-range");
+  }
   if (households < PILOT_MIN_HOUSEHOLDS) exclusionReasons.push("under-200-households");
   if (!isApartmentType(apartmentType)) exclusionReasons.push("unsupported-housing-type");
   if (hasExcludedHousingProgram({ complexName, apartmentType, saleType })) {

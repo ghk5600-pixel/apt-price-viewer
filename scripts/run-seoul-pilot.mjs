@@ -14,21 +14,23 @@ import { resolveBuildingLedgerSources } from "../functions/_shared/building-matc
 import { SUPPLY_CALCULATION_VERSION } from "../functions/_shared/supply-area.js";
 import { createD1RestClient } from "./lib/d1-rest-client.mjs";
 import { createMolitBatchClient } from "./lib/molit-batch-client.mjs";
+import { renderBatchReport } from "./lib/batch-report.mjs";
 import {
   attachBuildingPurposeVerification,
   attachRtmsMatch,
   buildRecentDealMonths,
   buildPilotCatalogEntry,
-  PILOT_CATALOG_VERSION,
+  buildPilotCatalogVersion,
   PILOT_TRADE_LOOKBACK_MONTHS,
   sortPilotCatalog,
 } from "./lib/pilot-catalog.mjs";
 
-const PILOT_SCOPE = "seoul-sale-apartment-built-from-2020-households-200";
 const SEOUL_SIDO_CODE = "11";
 const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
 
 const config = {
+  approvalDateFrom: readYmd("PILOT_APPROVAL_FROM", "20200101"),
+  approvalDateTo: readYmd("PILOT_APPROVAL_TO", "20291231"),
   mode: readChoice("PILOT_MODE", "catalog-and-collect", VALID_MODES),
   maxComplexes: readPositiveInteger("PILOT_MAX_COMPLEXES", 500),
   maxAttempts: readPositiveInteger("PILOT_MAX_ATTEMPTS", 500),
@@ -38,10 +40,28 @@ const config = {
   refreshCatalog: process.env.PILOT_REFRESH_CATALOG === "1",
   retryFailed: process.env.PILOT_RETRY_FAILED === "1",
   reportPath: process.env.PILOT_REPORT_PATH || "seoul-pilot-report.json",
+  reportHtmlPath:
+    process.env.PILOT_REPORT_HTML_PATH || "seoul-pilot-report.html",
+  reportCsvPath:
+    process.env.PILOT_REPORT_CSV_PATH || "seoul-pilot-report.csv",
 };
+if (config.approvalDateFrom > config.approvalDateTo) {
+  throw new Error("PILOT_APPROVAL_FROM must not be later than PILOT_APPROVAL_TO.");
+}
+
+const PILOT_SCOPE =
+  `seoul-sale-apartment-${config.approvalDateFrom}-` +
+  `${config.approvalDateTo}-households-200`;
+const pilotCatalogVersion = buildPilotCatalogVersion(
+  config.approvalDateFrom,
+  config.approvalDateTo
+);
 
 const startedAt = new Date().toISOString();
-const runId = `seoul-2020-${startedAt.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+const runId =
+  `seoul-${config.approvalDateFrom.slice(0, 4)}-` +
+  `${config.approvalDateTo.slice(0, 4)}-` +
+  `${startedAt.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
 const deadline = Date.now() + config.maxMinutes * 60_000;
 let apiCallCount = 0;
 let completedCount = 0;
@@ -49,11 +69,12 @@ let stoppedReason = "";
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.07.31-01-rc.7",
+  version: "v2026.07.31-01-rc.8",
   runId,
   scope: {
     region: "서울특별시",
-    approvalDateFrom: "2020-01-01",
+    approvalDateFrom: config.approvalDateFrom,
+    approvalDateTo: config.approvalDateTo,
     minimumHouseholds: 200,
     includedBuildingTypes: ["아파트", "주상복합"],
     excludedHousingPrograms: [
@@ -64,7 +85,7 @@ const report = {
     requiredSaleTenure: true,
     requiredRtmsApartmentSaleMatch: true,
     rtmsLookbackMonths: PILOT_TRADE_LOOKBACK_MONTHS,
-    catalogVersion: PILOT_CATALOG_VERSION,
+    catalogVersion: pilotCatalogVersion,
   },
   config,
   startedAt,
@@ -148,7 +169,12 @@ async function run() {
     report.collection.completed = completedCount;
     summarizeCollectionResults();
     report.stoppedReason = stoppedReason;
-    await writeFile(config.reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    const renderedReport = renderBatchReport(report);
+    await Promise.all([
+      writeFile(config.reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8"),
+      writeFile(config.reportHtmlPath, renderedReport.html, "utf8"),
+      writeFile(config.reportCsvPath, renderedReport.csv, "utf8"),
+    ]);
     await saveRun(report.status).catch((error) => {
       console.error(`D1 실행 보고서 저장 실패: ${error.message}`);
     });
@@ -161,7 +187,7 @@ async function run() {
 }
 
 async function buildCatalogWhenNeeded() {
-  const existingCount = await d1.getCatalogCount(PILOT_CATALOG_VERSION);
+  const existingCount = await d1.getCatalogCount(pilotCatalogVersion);
   if (existingCount > 0 && !config.refreshCatalog) {
     report.catalog.reusedExistingCatalog = true;
     report.catalog.eligibleComplexes = existingCount;
@@ -169,7 +195,9 @@ async function buildCatalogWhenNeeded() {
     return;
   }
 
-  const seedCatalog = config.refreshCatalog ? [] : await d1.listCatalog();
+  const seedCatalog = config.refreshCatalog
+    ? []
+    : await d1.listCatalog(pilotCatalogVersion);
   const seedByKaptCode = new Map(
     seedCatalog.map((row) => [String(row.kapt_code || ""), row])
   );
@@ -188,7 +216,10 @@ async function buildCatalogWhenNeeded() {
     if (!hasBudget()) return null;
     try {
       const basicInfo = await molit.fetchAptBasicInfo(candidate.kaptCode);
-      return buildPilotCatalogEntry(candidate, basicInfo, startedAt);
+      return buildPilotCatalogEntry(candidate, basicInfo, startedAt, {
+        approvalDateFrom: config.approvalDateFrom,
+        approvalDateTo: config.approvalDateTo,
+      });
     } catch (error) {
       report.catalog.errors.push({
         stage: "apt-basis",
@@ -248,6 +279,8 @@ async function buildCatalogWhenNeeded() {
         complexName: result.complexName,
         apartmentType: result.apartmentType,
         saleType: result.saleType,
+        approvalDate: result.approvalDate,
+        households: result.households,
         buildingPurpose: result.buildingPurpose || "",
         reasons: result.exclusionReasons,
       });
@@ -255,8 +288,8 @@ async function buildCatalogWhenNeeded() {
   }
   const eligible = sortPilotCatalog(finalResults.filter((result) => result.eligible));
   report.catalog.eligibleComplexes = eligible.length;
-  await d1.replaceCatalog(eligible, PILOT_CATALOG_VERSION, {
-    purgeRunScope: PILOT_SCOPE,
+  await d1.replaceCatalog(eligible, pilotCatalogVersion, {
+    catalogScope: PILOT_SCOPE,
   });
   console.log(`시험 대상 ${eligible.length}개 단지를 D1 카탈로그에 저장했습니다.`);
 }
@@ -339,7 +372,7 @@ async function discoverSeoulCandidates() {
 }
 
 async function collectProfiles() {
-  const catalog = await d1.listCatalog(PILOT_CATALOG_VERSION);
+  const catalog = await d1.listCatalog(pilotCatalogVersion);
   for (const row of catalog) {
     if (
       completedCount >= config.maxComplexes ||
@@ -743,11 +776,17 @@ async function saveRun(status) {
 
 function printSummary() {
   console.log("");
-  console.log(`서울 시험 배치 상태: ${report.status}`);
+  console.log(
+    `서울 ${config.approvalDateFrom}~${config.approvalDateTo} ` +
+      `배치 상태: ${report.status}`
+  );
   console.log(`카탈로그 대상: ${report.catalog.eligibleComplexes}개`);
   console.log(`이번 실행 완료: ${completedCount}개`);
   console.log(`공공데이터 API 호출: ${apiCallCount}회`);
-  console.log(`보고서: ${config.reportPath}`);
+  console.log(
+    `보고서: ${config.reportPath}, ${config.reportHtmlPath}, ` +
+      `${config.reportCsvPath}`
+  );
 }
 
 async function mapWithConcurrency(items, concurrency, mapper) {
@@ -770,6 +809,25 @@ function readPositiveInteger(name, fallback) {
   const value = Number(process.env[name] || fallback);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
+function readYmd(name, fallback) {
+  const value = String(process.env[name] || fallback).trim();
+  if (!/^\d{8}$/.test(value)) {
+    throw new Error(`${name} must use YYYYMMDD format.`);
+  }
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(4, 6));
+  const day = Number(value.slice(6, 8));
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() + 1 !== month ||
+    date.getUTCDate() !== day
+  ) {
+    throw new Error(`${name} must be a valid calendar date.`);
   }
   return value;
 }
