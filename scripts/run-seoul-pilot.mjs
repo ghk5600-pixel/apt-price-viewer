@@ -19,17 +19,13 @@ import {
   attachRtmsMatch,
   buildRecentDealMonths,
   buildPilotCatalogEntry,
-  parseCsv,
   PILOT_CATALOG_VERSION,
   PILOT_TRADE_LOOKBACK_MONTHS,
-  selectSeoulLegalDongs,
   sortPilotCatalog,
 } from "./lib/pilot-catalog.mjs";
 
-const LEGAL_DONG_CSV_URL =
-  "https://www.data.go.kr/cmm/cmm/fileDownload.do" +
-  "?atchFileId=FILE_000000003676587&fileDetailSn=1&insertDataPrcus=N";
 const PILOT_SCOPE = "seoul-sale-apartment-built-from-2020-households-200";
+const SEOUL_SIDO_CODE = "11";
 const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
 
 const config = {
@@ -53,7 +49,7 @@ let stoppedReason = "";
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.07.31-01-rc.6",
+  version: "v2026.07.31-01-rc.7",
   runId,
   scope: {
     region: "서울특별시",
@@ -75,7 +71,8 @@ const report = {
   finishedAt: "",
   status: "running",
   catalog: {
-    sourceLegalDongs: 0,
+    discoveryMethod: "kapt-sido-list",
+    sourceApartmentRows: 0,
     discoveredComplexes: 0,
     eligibleComplexes: 0,
     exclusions: {},
@@ -324,40 +321,20 @@ async function verifyBuildingPurposes(entries) {
 }
 
 async function discoverSeoulCandidates() {
-  assertBudget("법정동 목록 다운로드 전");
-  console.log("서울 법정동 목록을 내려받는 중입니다.");
-  const legalDongResponse = await fetch(
-    process.env.LEGAL_DONG_CSV_URL || LEGAL_DONG_CSV_URL,
-    { signal: AbortSignal.timeout(30_000) }
-  );
-  if (!legalDongResponse.ok) {
-    throw new Error(`법정동 CSV 다운로드 실패: HTTP ${legalDongResponse.status}`);
-  }
-  const legalDongs = selectSeoulLegalDongs(parseCsv(await legalDongResponse.text()));
-  report.catalog.sourceLegalDongs = legalDongs.length;
-  console.log(`서울 법정동 ${legalDongs.length}개에서 K-apt 단지를 찾습니다.`);
-
+  assertBudget("서울 K-apt 단지목록 조회 전");
+  console.log("K-apt 서울 시도 단지목록을 조회합니다.");
   const candidatesByCode = new Map();
-  for (const legalDong of legalDongs) {
-    if (!hasBudget()) {
-      stoppedReason = "catalog-budget-exhausted";
-      break;
-    }
-    try {
-      const candidates = await molit.fetchAptListForDong(legalDong.bjdCode);
-      for (const candidate of candidates) {
-        if (candidate.kaptCode && !candidatesByCode.has(candidate.kaptCode)) {
-          candidatesByCode.set(candidate.kaptCode, candidate);
-        }
-      }
-    } catch (error) {
-      report.catalog.errors.push({
-        stage: "apt-list",
-        bjdCode: legalDong.bjdCode,
-        message: error.message,
-      });
+  const candidates = await molit.fetchAptListForSido(SEOUL_SIDO_CODE);
+  report.catalog.sourceApartmentRows = candidates.length;
+  for (const candidate of candidates) {
+    if (candidate.kaptCode && !candidatesByCode.has(candidate.kaptCode)) {
+      candidatesByCode.set(candidate.kaptCode, candidate);
     }
   }
+  console.log(
+    `K-apt 서울 단지목록 ${candidates.length}행에서 ` +
+      `고유 단지 ${candidatesByCode.size}개를 찾았습니다.`
+  );
   return [...candidatesByCode.values()];
 }
 

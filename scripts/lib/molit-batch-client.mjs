@@ -4,8 +4,10 @@ import {
   parseRtmsXml,
 } from "../../functions/_shared/molit.js";
 
-const APT_LIST_ENDPOINT =
+const APT_LIST_BY_DONG_ENDPOINT =
   "https://apis.data.go.kr/1613000/AptListService3/getLegaldongAptList3";
+const APT_LIST_BY_SIDO_ENDPOINT =
+  "https://apis.data.go.kr/1613000/AptListService3/getSidoAptList3";
 const APT_BASIS_ENDPOINT =
   "https://apis.data.go.kr/1613000/AptBasisInfoServiceV4/getAphusBassInfoV4";
 const RETRY_DELAYS = [1_000, 3_000, 10_000];
@@ -22,39 +24,20 @@ export function createMolitBatchClient({
 
   return {
     async fetchAptListForDong(bjdCode) {
-      const rows = [];
-      let pageNo = 1;
-      let totalCount = Number.POSITIVE_INFINITY;
-      const numOfRows = 200;
+      return fetchAptList({
+        endpoint: APT_LIST_BY_DONG_ENDPOINT,
+        filterName: "bjdCode",
+        filterValue: bjdCode,
+        fallbackBjdCode: bjdCode,
+      });
+    },
 
-      while (rows.length < totalCount) {
-        const url = new URL(APT_LIST_ENDPOINT);
-        url.searchParams.set("serviceKey", serviceKey);
-        url.searchParams.set("bjdCode", bjdCode);
-        url.searchParams.set("pageNo", String(pageNo));
-        url.searchParams.set("numOfRows", String(numOfRows));
-        const payload = await fetchJsonWithRetry(url, {
-          fetchImpl,
-          onRequest,
-          timeoutMs,
-          operation: "apt-list",
-        });
-        const body = assertApiSuccess(payload, "AptList");
-        const items = normalizeItems(body.items).map((item) => ({
-          kaptCode: String(item.kaptCode || ""),
-          kaptName: String(item.kaptName || ""),
-          bjdCode: String(item.bjdCode || bjdCode),
-          as1: String(item.as1 || ""),
-          as2: String(item.as2 || ""),
-          as3: String(item.as3 || ""),
-          as4: String(item.as4 || ""),
-        }));
-        rows.push(...items);
-        totalCount = Math.max(0, Number(body.totalCount || rows.length));
-        if (!items.length || rows.length >= totalCount) break;
-        pageNo += 1;
-      }
-      return rows;
+    async fetchAptListForSido(sidoCode) {
+      return fetchAptList({
+        endpoint: APT_LIST_BY_SIDO_ENDPOINT,
+        filterName: "sidoCode",
+        filterValue: sidoCode,
+      });
     },
 
     async fetchAptBasicInfo(kaptCode) {
@@ -124,6 +107,47 @@ export function createMolitBatchClient({
       };
     },
   };
+
+  async function fetchAptList({
+    endpoint,
+    filterName,
+    filterValue,
+    fallbackBjdCode = "",
+  }) {
+    const rows = [];
+    let pageNo = 1;
+    let totalCount = Number.POSITIVE_INFINITY;
+    const numOfRows = 1000;
+
+    while (rows.length < totalCount) {
+      const url = new URL(endpoint);
+      url.searchParams.set("serviceKey", serviceKey);
+      url.searchParams.set(filterName, filterValue);
+      url.searchParams.set("pageNo", String(pageNo));
+      url.searchParams.set("numOfRows", String(numOfRows));
+      const payload = await fetchJsonWithRetry(url, {
+        fetchImpl,
+        onRequest,
+        timeoutMs,
+        operation: "apt-list",
+      });
+      const body = assertApiSuccess(payload, "AptList");
+      const items = normalizeItems(body.items).map((item) => ({
+        kaptCode: String(item.kaptCode || ""),
+        kaptName: String(item.kaptName || ""),
+        bjdCode: String(item.bjdCode || fallbackBjdCode),
+        as1: String(item.as1 || ""),
+        as2: String(item.as2 || ""),
+        as3: String(item.as3 || ""),
+        as4: String(item.as4 || ""),
+      }));
+      rows.push(...items);
+      totalCount = Math.max(0, Number(body.totalCount || rows.length));
+      if (!items.length || rows.length >= totalCount) break;
+      pageNo += 1;
+    }
+    return rows;
+  }
 }
 
 async function fetchJsonWithRetry(

@@ -38,6 +38,46 @@ test("K-apt 법정동 단지 목록을 마지막 페이지까지 수집한다", 
   );
 });
 
+test("K-apt 서울 시도 단지 목록을 CSV 없이 마지막 페이지까지 수집한다", async () => {
+  const requestedUrls = [];
+  const client = createMolitBatchClient({
+    serviceKey: "decoding-key",
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      requestedUrls.push(parsed);
+      const pageNo = Number(parsed.searchParams.get("pageNo"));
+      return apiResponse({
+        items: {
+          item: {
+            kaptCode: `S${pageNo}`,
+            kaptName: `서울 단지 ${pageNo}`,
+            bjdCode: `11${pageNo}`,
+          },
+        },
+        pageNo,
+        numOfRows: 1000,
+        totalCount: 2,
+      });
+    },
+  });
+
+  const items = await client.fetchAptListForSido("11");
+  assert.deepEqual(
+    items.map((item) => item.kaptCode),
+    ["S1", "S2"]
+  );
+  assert.equal(requestedUrls.length, 2);
+  assert.ok(
+    requestedUrls.every((url) =>
+      url.pathname.endsWith("/getSidoAptList3")
+    )
+  );
+  assert.deepEqual(
+    requestedUrls.map((url) => url.searchParams.get("sidoCode")),
+    ["11", "11"]
+  );
+});
+
 test("K-apt 기본정보의 단일 item을 반환한다", async () => {
   const client = createMolitBatchClient({
     serviceKey: "decoding-key",
