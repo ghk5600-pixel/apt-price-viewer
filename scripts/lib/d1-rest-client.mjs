@@ -200,6 +200,15 @@ export function createD1RestClient({
         ]);
       }
       await query(
+        `DELETE FROM supply_profile_cache
+         WHERE complex_key IN (
+           SELECT complex_key
+           FROM supply_batch_catalog
+           WHERE catalog_version <> ?1
+         )`,
+        [catalogVersion]
+      );
+      await query(
         "DELETE FROM supply_batch_catalog WHERE catalog_version <> ?1",
         [catalogVersion]
       );

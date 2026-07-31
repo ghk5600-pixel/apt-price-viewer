@@ -229,11 +229,13 @@ test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 �
     "seoul-sale-apartment-v2"
   );
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0].params.length, 26);
   assert.equal(calls[0].params[8], "분양");
   assert.equal(calls[0].params[20], "seoul-sale-apartment-v2");
-  assert.match(calls[1].sql, /DELETE FROM supply_batch_catalog/);
+  assert.match(calls[1].sql, /DELETE FROM supply_profile_cache/);
+  assert.deepEqual(calls[1].params, ["seoul-sale-apartment-v2"]);
+  assert.match(calls[2].sql, /DELETE FROM supply_batch_catalog/);
 });
 
 function apiResponse(body) {

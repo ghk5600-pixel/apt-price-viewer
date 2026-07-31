@@ -51,7 +51,7 @@ let completedCount = 0;
 let stoppedReason = "";
 
 const report = {
-  version: "v2026.07.31-01-rc.3",
+  version: "v2026.07.31-01-rc.4",
   runId,
   scope: {
     region: "서울특별시",
@@ -77,6 +77,7 @@ const report = {
     discoveredComplexes: 0,
     eligibleComplexes: 0,
     exclusions: {},
+    excludedComplexes: [],
     errors: [],
     reusedExistingCatalog: false,
     reusedCandidateCatalog: false,
@@ -239,6 +240,16 @@ async function buildCatalogWhenNeeded() {
       report.catalog.exclusions[reason] =
         (report.catalog.exclusions[reason] || 0) + 1;
     }
+    if (!result.eligible) {
+      report.catalog.excludedComplexes.push({
+        kaptCode: result.kaptCode,
+        complexName: result.complexName,
+        apartmentType: result.apartmentType,
+        saleType: result.saleType,
+        buildingPurpose: result.buildingPurpose || "",
+        reasons: result.exclusionReasons,
+      });
+    }
   }
   const eligible = sortPilotCatalog(finalResults.filter((result) => result.eligible));
   report.catalog.eligibleComplexes = eligible.length;
@@ -371,6 +382,10 @@ async function collectProfiles() {
       record.calculationVersion === SUPPLY_CALCULATION_VERSION
     ) {
       report.collection.skippedReady += 1;
+      report.collection.results.push(
+        buildCollectionResult(row, record, { reusedReady: true })
+      );
+      completedCount += 1;
       await d1.updateCatalogProfile(requestData.complexKey, {
         status: "ready",
         calculationVersion: SUPPLY_CALCULATION_VERSION,
@@ -548,6 +563,10 @@ async function collectOneComplex(row, record) {
     }
   }
 
+  return buildCollectionResult(row, record);
+}
+
+function buildCollectionResult(row, record, { reusedReady = false } = {}) {
   return {
     complexKey: record.complexKey,
     kaptCode: row.kapt_code,
@@ -559,8 +578,26 @@ async function collectOneComplex(row, record) {
     totalPages: Number(record.totalPages) || 0,
     totalRows: Number(record.totalRows) || 0,
     error: record.error || "",
+    reusedReady,
     resolution: record.resolution || null,
     validation: record.profile?.householdValidation || null,
+    supplyGroups: (record.profile?.groups || []).map((group) => ({
+      id: group.id,
+      label: group.label,
+      method: group.method,
+      unitCount: Number(group.unitCount) || 0,
+      targetExclusiveArea: Number(group.targetExclusiveArea) || 0,
+      representativeSupplyArea:
+        Number(group.representativeSupplyArea) || 0,
+      representativeSupplyPyeong:
+        Number(group.representativeSupplyPyeong) || 0,
+      candidates: (group.candidates || []).map((candidate) => ({
+        supplyArea: Number(candidate.supplyArea) || 0,
+        supplyPyeong: Number(candidate.supplyPyeong) || 0,
+        unitCount: Number(candidate.unitCount) || 0,
+        weight: Number(candidate.weight) || 0,
+      })),
+    })),
   };
 }
 

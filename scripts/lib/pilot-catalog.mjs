@@ -2,7 +2,8 @@ export const PILOT_SIDO_NAME = "서울특별시";
 export const PILOT_APPROVAL_DATE = "20200101";
 export const PILOT_MIN_HOUSEHOLDS = 200;
 export const PILOT_TRADE_LOOKBACK_MONTHS = 24;
-export const PILOT_CATALOG_VERSION = "seoul-sale-apartment-v3-building-purpose";
+export const PILOT_CATALOG_VERSION =
+  "seoul-sale-apartment-v4-building-purpose-cache-purge";
 
 const EXCLUDED_HOUSING_MARKERS = [
   "도시형생활주택",
