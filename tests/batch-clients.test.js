@@ -95,6 +95,41 @@ test("국토부 아파트 매매 실거래를 마지막 페이지까지 수집�
   );
 });
 
+test("건축HUB 표제부의 주용도와 기타용도를 보존한다", async () => {
+  const client = createMolitBatchClient({
+    serviceKey: "decoding-key",
+    fetchImpl: async () =>
+      apiResponse({
+        items: {
+          item: {
+            mgmBldrgstPk: "PK-1",
+            bldNm: "힐스테이트 남산",
+            mainPurpsCdNm: "공동주택",
+            etcPurps: "아파트-소형주택(도시형생활주택)",
+          },
+        },
+        numOfRows: 1000,
+        totalCount: 1,
+      }),
+  });
+
+  const page = await client.fetchBuildingHubPage(
+    "getBrTitleInfo",
+    {
+      sigunguCd: "11140",
+      bjdongCd: "13600",
+      platGbCd: "0",
+      bun: "0035",
+      ji: "0000",
+    },
+    1,
+    1000
+  );
+  assert.equal(page.totalCount, 1);
+  assert.equal(page.items[0].mainPurpsCdNm, "공동주택");
+  assert.match(page.items[0].etcPurps, /도시형생활주택/);
+});
+
 test("Cloudflare D1 REST query에 인증 헤더와 바인딩 값을 전달한다", async () => {
   const calls = [];
   const client = createD1RestClient({
@@ -185,6 +220,8 @@ test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 �
         tradeMatchCount: 3,
         tradeMatchMethod: "lot+name",
         lastTradeDate: "20260701",
+        buildingPurpose: "공동주택 / 아파트",
+        buildingPurposeVerified: true,
         priorityRank: 1,
         discoveredAt: "2026-07-31T00:00:00.000Z",
       },
@@ -193,7 +230,7 @@ test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 �
   );
 
   assert.equal(calls.length, 2);
-  assert.equal(calls[0].params.length, 24);
+  assert.equal(calls[0].params.length, 26);
   assert.equal(calls[0].params[8], "분양");
   assert.equal(calls[0].params[20], "seoul-sale-apartment-v2");
   assert.match(calls[1].sql, /DELETE FROM supply_batch_catalog/);

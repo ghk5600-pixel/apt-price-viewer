@@ -29,6 +29,8 @@ const PILOT_SCHEMA = [
     trade_match_count INTEGER NOT NULL DEFAULT 0,
     trade_match_method TEXT NOT NULL DEFAULT '',
     last_trade_date TEXT NOT NULL DEFAULT '',
+    building_purpose TEXT NOT NULL DEFAULT '',
+    building_purpose_verified INTEGER NOT NULL DEFAULT 0,
     catalog_version TEXT NOT NULL DEFAULT '',
     priority_rank INTEGER NOT NULL,
     profile_status TEXT NOT NULL DEFAULT 'pending',
@@ -110,6 +112,8 @@ export function createD1RestClient({
         trade_match_count: "INTEGER NOT NULL DEFAULT 0",
         trade_match_method: "TEXT NOT NULL DEFAULT ''",
         last_trade_date: "TEXT NOT NULL DEFAULT ''",
+        building_purpose: "TEXT NOT NULL DEFAULT ''",
+        building_purpose_verified: "INTEGER NOT NULL DEFAULT 0",
         catalog_version: "TEXT NOT NULL DEFAULT ''",
       });
     },
@@ -130,12 +134,13 @@ export function createD1RestClient({
           eupmyeondong_name, apartment_type, sale_type, approval_date, households,
           building_count, lot_address, road_address, plat_gb_cd, bun, ji,
           trade_match_count, trade_match_method, last_trade_date, catalog_version,
-          priority_rank,
+          building_purpose, building_purpose_verified, priority_rank,
           profile_status, profile_calculation_version, attempt_count, last_error,
           discovered_at, updated_at
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-          ?16, ?17, ?18, ?19, ?20, ?21, ?22, 'pending', '', 0, '', ?23, ?24
+          ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 'pending', '', 0, '',
+          ?25, ?26
         )
         ON CONFLICT(complex_key) DO UPDATE SET
           kapt_code = excluded.kapt_code,
@@ -157,6 +162,8 @@ export function createD1RestClient({
           trade_match_count = excluded.trade_match_count,
           trade_match_method = excluded.trade_match_method,
           last_trade_date = excluded.last_trade_date,
+          building_purpose = excluded.building_purpose,
+          building_purpose_verified = excluded.building_purpose_verified,
           catalog_version = excluded.catalog_version,
           priority_rank = excluded.priority_rank,
           discovered_at = excluded.discovered_at,
@@ -185,6 +192,8 @@ export function createD1RestClient({
           entry.tradeMatchMethod,
           entry.lastTradeDate,
           catalogVersion,
+          entry.buildingPurpose,
+          entry.buildingPurposeVerified ? 1 : 0,
           entry.priorityRank,
           entry.discoveredAt,
           updatedAt,

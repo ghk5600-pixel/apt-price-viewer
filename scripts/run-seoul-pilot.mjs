@@ -10,10 +10,12 @@ import {
   resumeRecord,
   shouldResetRecord,
 } from "../functions/api/supply-profile.js";
+import { resolveBuildingLedgerSources } from "../functions/_shared/building-match.js";
 import { SUPPLY_CALCULATION_VERSION } from "../functions/_shared/supply-area.js";
 import { createD1RestClient } from "./lib/d1-rest-client.mjs";
 import { createMolitBatchClient } from "./lib/molit-batch-client.mjs";
 import {
+  attachBuildingPurposeVerification,
   attachRtmsMatch,
   buildRecentDealMonths,
   buildPilotCatalogEntry,
@@ -49,7 +51,7 @@ let completedCount = 0;
 let stoppedReason = "";
 
 const report = {
-  version: "v2026.07.31-01-rc.2",
+  version: "v2026.07.31-01-rc.3",
   runId,
   scope: {
     region: "서울특별시",
@@ -84,6 +86,13 @@ const report = {
       successfulMonths: 0,
       failedMonths: 0,
       matchedComplexes: 0,
+      reusedComplexes: 0,
+    },
+    buildingPurposeVerification: {
+      requestedComplexes: 0,
+      verifiedComplexes: 0,
+      excludedComplexes: 0,
+      unverifiedComplexes: 0,
     },
   },
   collection: {
@@ -158,6 +167,9 @@ async function buildCatalogWhenNeeded() {
   }
 
   const seedCatalog = config.refreshCatalog ? [] : await d1.listCatalog();
+  const seedByKaptCode = new Map(
+    seedCatalog.map((row) => [String(row.kapt_code || ""), row])
+  );
   const candidates = seedCatalog.length
     ? seedCatalog.map(catalogRowToCandidate)
     : await discoverSeoulCandidates();
@@ -186,10 +198,37 @@ async function buildCatalogWhenNeeded() {
 
   const validResults = catalogResults.filter(Boolean);
   const staticEligible = validResults.filter((result) => result.eligible);
+  const reusedTradeMatches = [];
+  const entriesNeedingTradeVerification = [];
+  for (const entry of staticEligible) {
+    const seed = seedByKaptCode.get(entry.kaptCode);
+    if (Number(seed?.trade_match_count) > 0 && seed?.last_trade_date) {
+      reusedTradeMatches.push({
+        ...entry,
+        tradeMatched: true,
+        tradeMatchCount: Number(seed.trade_match_count),
+        tradeMatchMethod: String(seed.trade_match_method || ""),
+        lastTradeDate: String(seed.last_trade_date || ""),
+      });
+    } else {
+      entriesNeedingTradeVerification.push(entry);
+    }
+  }
+  report.catalog.tradeVerification.reusedComplexes = reusedTradeMatches.length;
+  const verifiedTradeMatches = [
+    ...reusedTradeMatches,
+    ...(await verifyApartmentSaleMatches(entriesNeedingTradeVerification)),
+  ];
+  const buildingPurposeResults = await verifyBuildingPurposes(
+    verifiedTradeMatches.filter((entry) => entry.eligible)
+  );
+  const purposeByKey = new Map(
+    buildingPurposeResults.map((result) => [result.complexKey, result])
+  );
   const verifiedByKey = new Map(
-    (await verifyApartmentSaleMatches(staticEligible)).map((result) => [
+    verifiedTradeMatches.map((result) => [
       result.complexKey,
-      result,
+      purposeByKey.get(result.complexKey) || result,
     ])
   );
   const finalResults = validResults.map(
@@ -205,6 +244,64 @@ async function buildCatalogWhenNeeded() {
   report.catalog.eligibleComplexes = eligible.length;
   await d1.replaceCatalog(eligible, PILOT_CATALOG_VERSION);
   console.log(`시험 대상 ${eligible.length}개 단지를 D1 카탈로그에 저장했습니다.`);
+}
+
+async function verifyBuildingPurposes(entries) {
+  report.catalog.buildingPurposeVerification.requestedComplexes = entries.length;
+  return mapWithConcurrency(entries, 3, async (entry) => {
+    try {
+      const source = {
+        sigunguCd: entry.bjdCode.slice(0, 5),
+        bjdongCd: entry.bjdCode.slice(5),
+        platGbCd: entry.platGbCd,
+        bun: entry.bun,
+        ji: entry.ji,
+      };
+      const resolution = await resolveBuildingLedgerSources({
+        requestedSource: source,
+        metadata: {
+          complexName: entry.complexName,
+          roadAddress: entry.roadAddress,
+          lotAddress: entry.lotAddress,
+          approvalDate: entry.approvalDate,
+          expectedHouseholds: entry.households,
+        },
+        fetchPage: (operation, pageSource, pageNo, pageSize) =>
+          molit.fetchBuildingHubPage(
+            operation,
+            pageSource,
+            pageNo,
+            pageSize
+          ),
+      });
+      const verified = attachBuildingPurposeVerification(entry, resolution);
+      if (verified.eligible) {
+        report.catalog.buildingPurposeVerification.verifiedComplexes += 1;
+      } else if (
+        verified.exclusionReasons.includes("excluded-building-ledger-purpose")
+      ) {
+        report.catalog.buildingPurposeVerification.excludedComplexes += 1;
+      } else {
+        report.catalog.buildingPurposeVerification.unverifiedComplexes += 1;
+      }
+      return verified;
+    } catch (error) {
+      report.catalog.errors.push({
+        stage: "building-purpose",
+        kaptCode: entry.kaptCode,
+        message: error.message,
+      });
+      report.catalog.buildingPurposeVerification.unverifiedComplexes += 1;
+      return {
+        ...entry,
+        eligible: false,
+        exclusionReasons: [
+          ...entry.exclusionReasons,
+          "building-purpose-unverified",
+        ],
+      };
+    }
+  });
 }
 
 async function discoverSeoulCandidates() {

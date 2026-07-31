@@ -2,7 +2,7 @@ export const PILOT_SIDO_NAME = "서울특별시";
 export const PILOT_APPROVAL_DATE = "20200101";
 export const PILOT_MIN_HOUSEHOLDS = 200;
 export const PILOT_TRADE_LOOKBACK_MONTHS = 24;
-export const PILOT_CATALOG_VERSION = "seoul-sale-apartment-v2";
+export const PILOT_CATALOG_VERSION = "seoul-sale-apartment-v3-building-purpose";
 
 const EXCLUDED_HOUSING_MARKERS = [
   "도시형생활주택",
@@ -14,6 +14,10 @@ const EXCLUDED_HOUSING_MARKERS = [
   "행복주택",
   "장기전세",
   "매입임대",
+];
+const EXCLUDED_BUILDING_PURPOSE_MARKERS = [
+  ...EXCLUDED_HOUSING_MARKERS,
+  "소형주택",
 ];
 
 export function parseCsv(text) {
@@ -124,6 +128,8 @@ export function buildPilotCatalogEntry(candidate, basicInfo, discoveredAt = new 
     tradeMatchCount: 0,
     tradeMatchMethod: "",
     lastTradeDate: "",
+    buildingPurpose: "",
+    buildingPurposeVerified: false,
     discoveredAt,
   };
 }
@@ -155,6 +161,57 @@ export function attachRtmsMatch(entry, items) {
     tradeMatchMethod:
       methods.has("lot+name") ? "lot+name" : methods.has("lot") ? "lot" : "name",
     lastTradeDate,
+  };
+}
+
+export function attachBuildingPurposeVerification(entry, resolution) {
+  if (!entry.eligible) return entry;
+  const purposes = Array.from(
+    new Set(
+      (resolution?.candidates || [])
+        .map((candidate) => String(candidate?.purpose || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const buildingPurpose = purposes.join(" | ");
+  const normalizedPurpose = normalizeText(buildingPurpose);
+
+  if (resolution?.status !== "matched" || !purposes.length) {
+    return {
+      ...entry,
+      eligible: false,
+      exclusionReasons: [...entry.exclusionReasons, "building-purpose-unverified"],
+      buildingPurpose,
+    };
+  }
+  if (
+    EXCLUDED_BUILDING_PURPOSE_MARKERS.some((marker) =>
+      normalizedPurpose.includes(marker)
+    )
+  ) {
+    return {
+      ...entry,
+      eligible: false,
+      exclusionReasons: [
+        ...entry.exclusionReasons,
+        "excluded-building-ledger-purpose",
+      ],
+      buildingPurpose,
+      buildingPurposeVerified: true,
+    };
+  }
+  if (!/아파트|공동주택|주상복합/.test(normalizedPurpose)) {
+    return {
+      ...entry,
+      eligible: false,
+      exclusionReasons: [...entry.exclusionReasons, "building-purpose-unverified"],
+      buildingPurpose,
+    };
+  }
+  return {
+    ...entry,
+    buildingPurpose,
+    buildingPurposeVerified: true,
   };
 }
 

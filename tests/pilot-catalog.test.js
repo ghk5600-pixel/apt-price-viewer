@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  attachBuildingPurposeVerification,
   attachRtmsMatch,
   buildRecentDealMonths,
   buildPilotCatalogEntry,
@@ -135,6 +136,37 @@ test("검증 기준월부터 최근 24개월을 역순으로 생성한다", () =
   assert.equal(months.length, 24);
   assert.equal(months[0], "202607");
   assert.equal(months.at(-1), "202408");
+});
+
+test("건축물대장 용도에서 도시형 생활주택과 소형주택을 최종 제외한다", () => {
+  const entry = {
+    eligible: true,
+    exclusionReasons: [],
+    buildingPurpose: "",
+    buildingPurposeVerified: false,
+  };
+  const apartment = attachBuildingPurposeVerification(entry, {
+    status: "matched",
+    candidates: [{ purpose: "공동주택 / 아파트" }],
+  });
+  assert.equal(apartment.eligible, true);
+  assert.equal(apartment.buildingPurposeVerified, true);
+
+  const urbanHousing = attachBuildingPurposeVerification(entry, {
+    status: "matched",
+    candidates: [{ purpose: "공동주택 / 아파트-소형주택(도시형생활주택)" }],
+  });
+  assert.equal(urbanHousing.eligible, false);
+  assert.deepEqual(urbanHousing.exclusionReasons, [
+    "excluded-building-ledger-purpose",
+  ]);
+
+  const unknown = attachBuildingPurposeVerification(entry, {
+    status: "not-found",
+    candidates: [],
+  });
+  assert.equal(unknown.eligible, false);
+  assert.deepEqual(unknown.exclusionReasons, ["building-purpose-unverified"]);
 });
 
 test("일반 지번과 산 지번을 건축HUB 요청 형식으로 변환한다", () => {

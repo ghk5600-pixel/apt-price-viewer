@@ -347,6 +347,12 @@ function toCandidateSummary(candidate) {
     lotAddress: String(candidate.row?.platPlc || ""),
     roadAddress: String(candidate.row?.newPlatPlc || ""),
     approvalDate: normalizeDate(candidate.row?.useAprDay || candidate.row?.useAprDate),
+    purpose: [
+      String(candidate.row?.mainPurpsCdNm || "").trim(),
+      String(candidate.row?.etcPurps || "").trim(),
+    ]
+      .filter(Boolean)
+      .join(" / "),
     households: firstPositiveInteger(
       candidate.row?.hhldCnt,
       candidate.row?.totHhldCnt,

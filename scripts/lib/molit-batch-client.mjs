@@ -1,4 +1,5 @@
 import {
+  buildBuildingHubUrl,
   buildRtmsUrl,
   parseRtmsXml,
 } from "../../functions/_shared/molit.js";
@@ -97,6 +98,30 @@ export function createMolitBatchClient({
         pageNo += 1;
       }
       return rows;
+    },
+
+    async fetchBuildingHubPage(operation, source, pageNo = 1, pageSize = 1000) {
+      const url = buildBuildingHubUrl({
+        serviceKey,
+        operation,
+        params: {
+          ...source,
+          pageNo: String(pageNo),
+          numOfRows: String(pageSize),
+        },
+      });
+      const payload = await fetchJsonWithRetry(url, {
+        fetchImpl,
+        onRequest,
+        timeoutMs,
+        operation,
+      });
+      const body = assertApiSuccess(payload, `BuildingHUB ${operation}`);
+      return {
+        items: normalizeItems(body.items || body.item),
+        totalCount: Math.max(0, Number(body.totalCount || 0)),
+        returnedPageSize: Math.max(0, Number(body.numOfRows || pageSize)),
+      };
     },
   };
 }
