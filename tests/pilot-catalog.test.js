@@ -138,7 +138,7 @@ test("검증 기준월부터 최근 24개월을 역순으로 생성한다", () =
   assert.equal(months.at(-1), "202408");
 });
 
-test("건축물대장 용도에서 도시형 생활주택과 소형주택을 최종 제외한다", () => {
+test("혼합 용도의 단지는 유지하고 제외 주택 여부는 세대 면적 단계에서 판정한다", () => {
   const entry = {
     eligible: true,
     exclusionReasons: [],
@@ -156,10 +156,8 @@ test("건축물대장 용도에서 도시형 생활주택과 소형주택을 최
     status: "matched",
     candidates: [{ purpose: "공동주택 / 아파트-소형주택(도시형생활주택)" }],
   });
-  assert.equal(urbanHousing.eligible, false);
-  assert.deepEqual(urbanHousing.exclusionReasons, [
-    "excluded-building-ledger-purpose",
-  ]);
+  assert.equal(urbanHousing.eligible, true);
+  assert.deepEqual(urbanHousing.exclusionReasons, []);
 
   const unknown = attachBuildingPurposeVerification(entry, {
     status: "not-found",

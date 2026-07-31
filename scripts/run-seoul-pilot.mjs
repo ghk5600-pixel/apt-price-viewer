@@ -34,10 +34,10 @@ const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
 
 const config = {
   mode: readChoice("PILOT_MODE", "catalog-and-collect", VALID_MODES),
-  maxComplexes: readPositiveInteger("PILOT_MAX_COMPLEXES", 3),
-  maxAttempts: readPositiveInteger("PILOT_MAX_ATTEMPTS", 12),
-  maxMinutes: readPositiveInteger("PILOT_MAX_MINUTES", 240),
-  maxApiCalls: readPositiveInteger("PILOT_MAX_API_CALLS", 4_500),
+  maxComplexes: readPositiveInteger("PILOT_MAX_COMPLEXES", 500),
+  maxAttempts: readPositiveInteger("PILOT_MAX_ATTEMPTS", 500),
+  maxMinutes: readPositiveInteger("PILOT_MAX_MINUTES", 330),
+  maxApiCalls: readPositiveInteger("PILOT_MAX_API_CALLS", 9_000),
   maxRetriesPerComplex: readPositiveInteger("PILOT_MAX_RETRIES_PER_COMPLEX", 3),
   refreshCatalog: process.env.PILOT_REFRESH_CATALOG === "1",
   retryFailed: process.env.PILOT_RETRY_FAILED === "1",
@@ -50,9 +50,10 @@ const deadline = Date.now() + config.maxMinutes * 60_000;
 let apiCallCount = 0;
 let completedCount = 0;
 let stoppedReason = "";
+const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.07.31-01-rc.5",
+  version: "v2026.07.31-01-rc.6",
   runId,
   scope: {
     region: "서울특별시",
@@ -103,6 +104,8 @@ const report = {
     skippedReady: 0,
     skippedWaiting: 0,
     skippedFailed: 0,
+    statusCounts: {},
+    failures: [],
     results: [],
   },
   apiCallCount: 0,
@@ -146,6 +149,7 @@ async function run() {
     report.finishedAt = new Date().toISOString();
     report.apiCallCount = apiCallCount;
     report.collection.completed = completedCount;
+    summarizeCollectionResults();
     report.stoppedReason = stoppedReason;
     await writeFile(config.reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     await saveRun(report.status).catch((error) => {
@@ -290,6 +294,7 @@ async function verifyBuildingPurposes(entries) {
       });
       const verified = attachBuildingPurposeVerification(entry, resolution);
       if (verified.eligible) {
+        verifiedResolutionByComplexKey.set(entry.complexKey, resolution);
         report.catalog.buildingPurposeVerification.verifiedComplexes += 1;
       } else if (
         verified.exclusionReasons.includes("excluded-building-ledger-purpose")
@@ -372,12 +377,27 @@ async function collectProfiles() {
 
     const requestData = catalogRowToRequest(row);
     let record = await d1.getProfileRecord(requestData.complexKey);
+    let recordChanged = false;
     if (!record || shouldResetRecord(record, requestData)) {
       record = createRecord(requestData);
-      await d1.putProfileRecord(requestData.complexKey, record);
+      recordChanged = true;
     } else {
       record.expectedHouseholds = requestData.expectedHouseholds;
       record.metadata = requestData.metadata;
+    }
+    const verifiedResolution = verifiedResolutionByComplexKey.get(
+      requestData.complexKey
+    );
+    if (
+      verifiedResolution?.status === "matched" &&
+      (!record.resolution ||
+        record.resolution.version !== verifiedResolution.version)
+    ) {
+      applyVerifiedResolution(record, verifiedResolution);
+      recordChanged = true;
+    }
+    if (recordChanged) {
+      await d1.putProfileRecord(requestData.complexKey, record);
     }
 
     if (
@@ -398,6 +418,7 @@ async function collectProfiles() {
 
     if (record.status === "failed" && !config.retryFailed) {
       report.collection.skippedFailed += 1;
+      report.collection.results.push(buildCollectionResult(row, record));
       continue;
     }
 
@@ -408,6 +429,7 @@ async function collectProfiles() {
       retryAt > deadline
     ) {
       report.collection.skippedWaiting += 1;
+      report.collection.results.push(buildCollectionResult(row, record));
       continue;
     }
 
@@ -581,6 +603,8 @@ function buildCollectionResult(row, record, { reusedReady = false } = {}) {
     totalPages: Number(record.totalPages) || 0,
     totalRows: Number(record.totalRows) || 0,
     error: record.error || "",
+    errorDetails: record.errorDetails || null,
+    failureReason: getFailureReason(record),
     reusedReady,
     resolution: record.resolution || null,
     validation: record.profile?.householdValidation || null,
@@ -602,6 +626,63 @@ function buildCollectionResult(row, record, { reusedReady = false } = {}) {
       })),
     })),
   };
+}
+
+function applyVerifiedResolution(record, resolution) {
+  record.resolution = resolution;
+  record.resolvedSources = resolution.sources;
+  record.sourcePlans = resolution.sources.map((source) => ({
+    source,
+    status: "pending",
+    pageSize: null,
+    pageSizeProbe: [],
+    nextPage: 1,
+    totalPages: null,
+    totalRows: null,
+    lastSuccessfulPage: 0,
+  }));
+  record.activeSourceIndex = 0;
+  record.pageSize = null;
+  record.pageSizeProbe = [];
+  record.nextPage = 1;
+  record.totalPages = null;
+  record.totalRows = null;
+  record.lastSuccessfulPage = 0;
+}
+
+function getFailureReason(record) {
+  if (record.status === "ready") return "";
+  const details = record.errorDetails || {};
+  return (
+    details.resultCode ||
+    details.operation ||
+    record.status ||
+    "unknown"
+  );
+}
+
+function summarizeCollectionResults() {
+  const statusCounts = {};
+  const failures = [];
+  for (const result of report.collection.results) {
+    const status = result.status || "unknown";
+    statusCounts[status] = (statusCounts[status] || 0) + 1;
+    if (status !== "ready") {
+      failures.push({
+        complexKey: result.complexKey,
+        kaptCode: result.kaptCode,
+        complexName: result.complexName,
+        approvalDate: result.approvalDate,
+        status,
+        reason: result.failureReason,
+        error: result.error,
+        completedPages: result.completedPages,
+        totalPages: result.totalPages,
+      });
+    }
+  }
+  report.collection.statusCounts = statusCounts;
+  report.collection.failures = failures;
 }
 
 function catalogRowToRequest(row) {

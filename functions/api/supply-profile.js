@@ -21,7 +21,8 @@ import {
 import { createSupplyProfileStore } from "../_shared/supply-store.js";
 
 const BUILDING_AREA_OPERATION = "getBrExposPubuseAreaInfo";
-const COLLECTION_PROTOCOL_VERSION = "page-fetch-v4-unit-key";
+const COLLECTION_PROTOCOL_VERSION =
+  "page-fetch-v6-apartment-component-filter";
 const PAGE_SIZE_CANDIDATES = [1000, 500, 100];
 const LEASE_MILLISECONDS = 45_000;
 const PAGE_FETCH_TIMEOUT_MILLISECONDS = 20_000;
@@ -246,6 +247,7 @@ export async function advanceCollection(record, serviceKey, options = {}) {
 
   record.collectionState = consumeBuildingAreaRows(record.collectionState, page.items, {
     isFinal: pageNo === totalPages,
+    apartmentComponents: record.resolution.components,
   });
   plan.lastSuccessfulPage = pageNo;
   plan.nextPage = pageNo + 1;
@@ -263,6 +265,7 @@ export async function advanceCollection(record, serviceKey, options = {}) {
           requested: record.resolution.requestedSource,
           resolved: record.resolvedSources,
           managementPks: record.resolution.managementPks,
+          apartmentComponents: record.resolution.components || [],
           matchVersion: LEDGER_MATCH_VERSION,
         },
         collectionState: record.collectionState,
@@ -296,6 +299,8 @@ export async function advanceCollection(record, serviceKey, options = {}) {
       };
       record.profile.ledgerMatch = {
         candidates: record.resolution.candidates,
+        apartmentComponents: record.resolution.components || [],
+        excludedComponents: record.resolution.excludedComponents || [],
         managementPks: record.resolution.managementPks,
         matchedAt: record.resolution.matchedAt,
       };

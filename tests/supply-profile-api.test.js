@@ -219,6 +219,120 @@ test("K-apt 세대수와 수집 세대수 차이를 경고 정보로 반환한�
   }
 });
 
+test("주상복합에서는 표제부의 아파트 건물과 연결된 아파트 전유부만 집계한다", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    const operation = parsed.pathname.split("/").pop();
+    const numOfRows = Number(parsed.searchParams.get("numOfRows"));
+
+    if (operation === "getBrRecapTitleInfo") {
+      return successResponse(
+        [
+          {
+            mgmBldrgstPk: "mixed-recap",
+            sigunguCd: "11680",
+            bjdongCd: "11400",
+            platGbCd: "0",
+            bun: "0743",
+            ji: "0000",
+            bldNm: "서초센트럴아이파크",
+            newPlatPlc: "서울특별시 강남구 시험로 10",
+            hhldCnt: 1,
+            mainPurpsCdNm: "공동주택",
+            etcPurps: "아파트, 오피스텔, 업무시설",
+          },
+        ],
+        1,
+        numOfRows
+      );
+    }
+    if (operation === "getBrTitleInfo") {
+      return successResponse(
+        [
+          {
+            mgmBldrgstPk: "apartment-title-pk",
+            sigunguCd: "11680",
+            bjdongCd: "11400",
+            platGbCd: "0",
+            bun: "0743",
+            ji: "0000",
+            bldNm: "서초센트럴아이파크 101동",
+            dongNm: "101동",
+            newPlatPlc: "서울특별시 강남구 시험로 10",
+            mainPurpsCdNm: "공동주택",
+            etcPurps: "아파트",
+          },
+          {
+            mgmBldrgstPk: "officetel-title-pk",
+            sigunguCd: "11680",
+            bjdongCd: "11400",
+            platGbCd: "0",
+            bun: "0743",
+            ji: "0000",
+            bldNm: "서초센트럴아이파크 업무동",
+            dongNm: "업무동",
+            newPlatPlc: "서울특별시 강남구 시험로 10",
+            mainPurpsCdNm: "업무시설",
+            etcPurps: "오피스텔",
+          },
+        ],
+        2,
+        numOfRows
+      );
+    }
+    if (!isAreaRequest(parsed)) return successResponse([], 0, numOfRows);
+
+    return successResponse(
+      [
+        {
+          ...row("apartment-unit-pk", "전유", 84.95, "아파트"),
+          bldNm: "서초센트럴아이파크 101동",
+          dongNm: "101동",
+        },
+        {
+          ...row("apartment-unit-pk", "공용", 26.77, "계단실"),
+          bldNm: "서초센트럴아이파크 101동",
+          dongNm: "101동",
+        },
+        {
+          ...row("officetel-unit-pk", "전유", 59.9, "오피스텔"),
+          bldNm: "서초센트럴아이파크 업무동",
+          dongNm: "업무동",
+        },
+        {
+          ...row("officetel-unit-pk", "공용", 15.1, "계단실"),
+          bldNm: "서초센트럴아이파크 업무동",
+          dongNm: "업무동",
+        },
+      ],
+      4,
+      numOfRows
+    );
+  };
+
+  try {
+    const { response, payload } = await callApi(
+      requestUrl("mixed-use-complex", {
+        expectedHouseholds: 1,
+        complexName: "서초센트럴아이파크",
+        roadAddress: "서울특별시 강남구 시험로 10",
+      })
+    );
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "ready");
+    assert.deepEqual(payload.profile.source.managementPks, [
+      "apartment-title-pk",
+    ]);
+    assert.equal(payload.profile.unitCount, 1);
+    assert.equal(payload.profile.filteredRows, 2);
+    assert.equal(payload.validation.status, "matched");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("대표 지번 조회가 0건이어도 같은 법정동의 동일 단지명 지번으로 공급면적을 수집한다", async () => {
   const originalFetch = globalThis.fetch;
   const areaLots = [];

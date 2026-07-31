@@ -1,10 +1,40 @@
-export const LEDGER_MATCH_VERSION = "building-ledger-match-v1";
+export const LEDGER_MATCH_VERSION =
+  "building-ledger-match-v3-apartment-unit-filter";
 
 const TITLE_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const ATTACHED_LOT_OPERATION = "getBrAtchJibunInfo";
 const DISCOVERY_PAGE_SIZE = 1000;
 const MAX_DISCOVERY_PAGES = 20;
 const MAX_RESOLVED_SOURCES = 24;
+const EXCLUDED_HOUSING_MARKERS = [
+  "도시형생활주택",
+  "소형주택",
+  "청년안심주택",
+  "역세권청년주택",
+  "공공임대",
+  "국민임대",
+  "영구임대",
+  "행복주택",
+  "장기전세",
+  "매입임대",
+];
+const NON_APARTMENT_COMPONENT_MARKERS = [
+  "오피스텔",
+  "업무시설",
+  "판매시설",
+  "근린생활시설",
+  "생활숙박시설",
+  "다세대주택",
+  "연립주택",
+  "기숙사",
+];
+const NON_APARTMENT_NAME_MARKERS = [
+  "상가",
+  "오피스텔",
+  "업무시설",
+  "판매시설",
+  "근린생활시설",
+];
 
 export async function resolveBuildingLedgerSources({
   requestedSource,
@@ -87,8 +117,11 @@ export async function resolveBuildingLedgerSources({
     ranked = rankCandidates(rows, metadata, requested);
   }
 
-  const selected = selectCandidates(ranked);
+  const selected = selectApartmentCandidates(ranked);
   if (!selected.length) {
+    const apartmentCandidates = ranked.filter((candidate) =>
+      isSelectableApartmentComponent(candidate.row)
+    );
     return {
       status: "not-found",
       version: LEDGER_MATCH_VERSION,
@@ -98,12 +131,16 @@ export async function resolveBuildingLedgerSources({
       managementPks: [],
       candidates: ranked.slice(0, 10).map(toCandidateSummary),
       evidence,
-      reason: "같은 법정동에서 단지명과 주소가 일치하는 건축물대장을 찾지 못했습니다.",
+      reasonCode: apartmentCandidates.length
+        ? "APARTMENT_COMPONENT_MATCH_UNCERTAIN"
+        : "APARTMENT_COMPONENT_NOT_FOUND",
+      reason: apartmentCandidates.length
+        ? "아파트 용도의 건축물대장은 찾았지만 단지명·주소·사용승인일의 일치도가 부족합니다."
+        : "동일 단지에서 공동주택(아파트) 용도의 건축물대장 관리번호를 찾지 못했습니다.",
     };
   }
 
   const selectedSources = uniqueSources(selected.map((candidate) => candidate.source));
-  const relatedSources = [...selectedSources];
   for (const source of selectedSources.slice(0, 8)) {
     const page = await fetchPage(
       ATTACHED_LOT_OPERATION,
@@ -112,9 +149,6 @@ export async function resolveBuildingLedgerSources({
       DISCOVERY_PAGE_SIZE
     );
     evidence.push(discoveryEvidence(ATTACHED_LOT_OPERATION, "matched-lot", page, source));
-    relatedSources.push(
-      ...page.items.flatMap((row) => sourcesFromAttachedRow(row, source))
-    );
   }
 
   return {
@@ -122,11 +156,16 @@ export async function resolveBuildingLedgerSources({
     version: LEDGER_MATCH_VERSION,
     requestedSource: requested,
     metadata: normalizeMetadata(metadata),
-    sources: uniqueSources(relatedSources).slice(0, MAX_RESOLVED_SOURCES),
+    sources: selectedSources.slice(0, MAX_RESOLVED_SOURCES),
     managementPks: Array.from(
       new Set(selected.map((candidate) => String(candidate.row.mgmBldrgstPk || "")).filter(Boolean))
     ),
+    components: selected.map(toComponentSelector),
     candidates: selected.map(toCandidateSummary),
+    excludedComponents: ranked
+      .filter((candidate) => !selected.includes(candidate))
+      .slice(0, 20)
+      .map(toCandidateSummary),
     evidence,
     matchedAt: new Date().toISOString(),
   };
@@ -192,13 +231,14 @@ export function scoreBuildingLedgerRow(row, metadata = {}, requestedSource = {})
     row?.totHhldCnt,
     row?.householdCnt
   );
+  let householdRatio = null;
   if (expectedHouseholds && ledgerHouseholds) {
-    const ratio = Math.min(expectedHouseholds, ledgerHouseholds) /
+    householdRatio = Math.min(expectedHouseholds, ledgerHouseholds) /
       Math.max(expectedHouseholds, ledgerHouseholds);
-    if (ratio >= 0.95) {
+    if (householdRatio >= 0.95) {
       score += 0.16;
       reasons.push("세대수 일치");
-    } else if (ratio >= 0.75) {
+    } else if (householdRatio >= 0.75) {
       score += 0.08;
       reasons.push("세대수 유사");
     }
@@ -206,23 +246,24 @@ export function scoreBuildingLedgerRow(row, metadata = {}, requestedSource = {})
 
   const targetApprovalDate = normalizeDate(normalizedMetadata.approvalDate);
   const ledgerApprovalDate = normalizeDate(row?.useAprDay || row?.useAprDate);
+  let approvalYearDifference = null;
   if (targetApprovalDate && ledgerApprovalDate) {
-    const yearDifference = Math.abs(
+    approvalYearDifference = Math.abs(
       Number(targetApprovalDate.slice(0, 4)) - Number(ledgerApprovalDate.slice(0, 4))
     );
-    if (yearDifference === 0) {
+    if (approvalYearDifference === 0) {
       score += 0.1;
       reasons.push("사용승인연도 일치");
-    } else if (yearDifference === 1) {
+    } else if (approvalYearDifference === 1) {
       score += 0.04;
       reasons.push("사용승인연도 인접");
     }
   }
 
-  const purpose = normalizeText(`${row?.mainPurpsCdNm || ""} ${row?.etcPurps || ""}`);
-  if (/아파트|공동주택|주상복합/.test(purpose)) {
+  const componentType = classifyBuildingComponent(row);
+  if (isApartmentComponentType(componentType)) {
     score += 0.05;
-    reasons.push("공동주택 용도");
+    reasons.push("아파트 용도");
   }
 
   return {
@@ -231,8 +272,34 @@ export function scoreBuildingLedgerRow(row, metadata = {}, requestedSource = {})
     nameRequired: Boolean(targetName),
     nameSimilarity: round(nameSimilarity, 6),
     roadSimilarity: round(roadSimilarity, 6),
+    householdRatio: householdRatio === null ? null : round(householdRatio, 6),
+    approvalYearDifference,
+    componentType,
     source,
   };
+}
+
+export function classifyBuildingComponent(row) {
+  const mainPurpose = normalizeText(row?.mainPurpsCdNm || "");
+  const etcPurpose = normalizeText(row?.etcPurps || "");
+  const purpose = `${mainPurpose}${etcPurpose}`;
+  if (!purpose) return "unknown";
+
+  const hasApartment = purpose.includes("아파트");
+  const hasCommunalHousing =
+    mainPurpose.includes("공동주택") || etcPurpose === "공동주택";
+  const hasExcludedHousing = EXCLUDED_HOUSING_MARKERS.some((marker) =>
+    purpose.includes(marker)
+  );
+  const hasNonApartment = NON_APARTMENT_COMPONENT_MARKERS.some((marker) =>
+    purpose.includes(marker)
+  );
+  if (hasApartment && hasExcludedHousing) return "apartment-mixed-housing";
+  if (hasApartment && hasNonApartment) return "apartment-mixed-use";
+  if (hasApartment) return "apartment";
+  if (hasExcludedHousing) return "excluded-housing";
+  if (hasCommunalHousing && !hasNonApartment) return "apartment-generic";
+  return hasNonApartment ? "non-apartment" : "unknown";
 }
 
 export function sourceFromRow(row, fallback = {}) {
@@ -309,6 +376,106 @@ function hasConfidentCandidate(ranked) {
   return ranked.some((candidate) => isConfidentCandidate(candidate));
 }
 
+function selectApartmentCandidates(ranked) {
+  const apartmentCandidates = ranked.filter((candidate) =>
+    isSelectableApartmentComponent(candidate.row)
+  );
+  if (!apartmentCandidates.length) return [];
+  const buildingCandidates = apartmentCandidates.filter(
+    (candidate) => candidate.operation === "getBrTitleInfo"
+  );
+  const selectionPool = buildingCandidates.length
+    ? buildingCandidates
+    : apartmentCandidates;
+
+  const contextAnchor = ranked.find((candidate) => isConfidentCandidate(candidate));
+  const apartmentAnchor =
+    selectionPool.find((candidate) => isConfidentCandidate(candidate)) ||
+    selectionPool.find((candidate) => isApartmentRescueCandidate(candidate));
+  const anchor = contextAnchor || apartmentAnchor;
+  if (!anchor) return [];
+
+  return selectionPool.filter((candidate) => {
+    if (!isRelatedCandidate(candidate, anchor)) return false;
+    return (
+      isConfidentCandidate(candidate) ||
+      isApartmentRescueCandidate(candidate) ||
+      sameSource(candidate.source, anchor.source)
+    );
+  });
+}
+
+function isSelectableApartmentComponent(row) {
+  return isApartmentComponentType(classifyBuildingComponent(row));
+}
+
+function isApartmentRescueCandidate(candidate) {
+  const buildingName = normalizeBuildingName(
+    candidate.row?.bldNm || candidate.row?.etcPurps || ""
+  );
+  if (
+    candidate.componentType === "apartment-generic" &&
+    NON_APARTMENT_NAME_MARKERS.some((marker) =>
+      buildingName.includes(normalizeBuildingName(marker))
+    )
+  ) {
+    return false;
+  }
+  if (candidate.nameSimilarity >= 0.45 && candidate.exactSource) return true;
+  if (
+    candidate.exactSource &&
+    candidate.roadSimilarity >= 0.85 &&
+    candidate.approvalYearDifference === 0
+  ) {
+    return true;
+  }
+  return (
+    candidate.exactSource &&
+    candidate.approvalYearDifference === 0 &&
+    Number(candidate.householdRatio || 0) >= 0.5
+  );
+}
+
+function isApartmentComponentType(componentType) {
+  return [
+    "apartment",
+    "apartment-generic",
+    "apartment-mixed-use",
+    "apartment-mixed-housing",
+  ].includes(componentType);
+}
+
+function toComponentSelector(candidate) {
+  return {
+    managementPk: String(candidate.row?.mgmBldrgstPk || ""),
+    buildingName: String(candidate.row?.bldNm || ""),
+    dongName: String(candidate.row?.dongNm || ""),
+    purpose: [
+      String(candidate.row?.mainPurpsCdNm || "").trim(),
+      String(candidate.row?.etcPurps || "").trim(),
+    ]
+      .filter(Boolean)
+      .join(" / "),
+    componentType:
+      candidate.componentType || classifyBuildingComponent(candidate.row),
+    source: candidate.source,
+  };
+}
+
+function isRelatedCandidate(candidate, anchor) {
+  if (sameSource(candidate.source, anchor.source)) return true;
+  if (
+    candidate.roadSimilarity >= 0.85 &&
+    anchor.roadSimilarity >= 0.85
+  ) {
+    return true;
+  }
+  return (
+    candidate.nameSimilarity >= 0.65 &&
+    anchor.nameSimilarity >= 0.65
+  );
+}
+
 function selectCandidates(ranked) {
   const best = ranked.find((candidate) => isConfidentCandidate(candidate));
   if (!best) return [];
@@ -344,6 +511,7 @@ function toCandidateSummary(candidate) {
   return {
     managementPk: String(candidate.row?.mgmBldrgstPk || ""),
     buildingName: String(candidate.row?.bldNm || ""),
+    dongName: String(candidate.row?.dongNm || ""),
     lotAddress: String(candidate.row?.platPlc || ""),
     roadAddress: String(candidate.row?.newPlatPlc || ""),
     approvalDate: normalizeDate(candidate.row?.useAprDay || candidate.row?.useAprDate),
@@ -362,6 +530,8 @@ function toCandidateSummary(candidate) {
     operation: candidate.operation,
     scope: candidate.scope,
     score: candidate.score,
+    componentType:
+      candidate.componentType || classifyBuildingComponent(candidate.row),
     reasons: candidate.reasons,
   };
 }

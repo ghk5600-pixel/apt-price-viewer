@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  classifyBuildingComponent,
   resolveBuildingLedgerSources,
   scoreBuildingLedgerRow,
 } from "../functions/_shared/building-match.js";
@@ -63,7 +64,7 @@ test("대표 지번이 0건이면 같은 법정동에서 단지명으로 다른 
   assert.equal(resolution.status, "matched");
   assert.deepEqual(
     resolution.sources.map((item) => `${item.bun}-${item.ji}`),
-    ["0060-0001", "0060-0002"]
+    ["0060-0001"]
   );
   assert.equal(resolution.candidates[0].buildingName, "오티에르 반포 아파트");
   assert.ok(
@@ -72,6 +73,85 @@ test("대표 지번이 0건이면 같은 법정동에서 단지명으로 다른 
         call.operation === "getBrRecapTitleInfo" &&
         !call.requested.bun
     )
+  );
+});
+
+test("혼합 건물에서는 아파트 관리번호만 면적 수집 대상으로 선택한다", async () => {
+  const requestedSource = source("11650", "10800", "1445", "0000");
+  const resolution = await resolveBuildingLedgerSources({
+    requestedSource,
+    metadata: {
+      complexName: "서초센트럴아이파크",
+      roadAddress: "서울특별시 서초구 반포대로18길 36",
+      lotAddress: "서울특별시 서초구 서초동 1445",
+      approvalDate: "20200820",
+      expectedHouseholds: 318,
+    },
+    fetchPage: async (operation, requested) => {
+      if (operation === "getBrRecapTitleInfo" && requested.bun) {
+        return page([
+          titleRow({
+            source: requestedSource,
+            managementPk: "mixed-recap",
+            name: "서초센트럴아이파크",
+            roadAddress: "서울특별시 서초구 반포대로18길 36",
+            households: 318,
+            approvalDate: "20200820",
+            mainPurpose: "공동주택",
+            etcPurpose: "공동주택,오피스텔,업무시설,판매시설",
+          }),
+        ]);
+      }
+      if (operation === "getBrTitleInfo" && requested.bun) {
+        return page([
+          titleRow({
+            source: requestedSource,
+            managementPk: "apartment-title",
+            name: "",
+            roadAddress: "서울특별시 서초구 반포대로18길 36",
+            approvalDate: "20200820",
+            mainPurpose: "공동주택",
+            etcPurpose: "공동주택(아파트)",
+          }),
+          titleRow({
+            source: requestedSource,
+            managementPk: "officetel-title",
+            name: "",
+            roadAddress: "서울특별시 서초구 반포대로18길 36",
+            approvalDate: "20200820",
+            mainPurpose: "업무시설",
+            etcPurpose: "오피스텔",
+          }),
+        ]);
+      }
+      return page([]);
+    },
+  });
+
+  assert.equal(resolution.status, "matched");
+  assert.deepEqual(resolution.managementPks, ["apartment-title"]);
+  assert.equal(resolution.candidates[0].componentType, "apartment");
+  assert.ok(
+    resolution.excludedComponents.some(
+      (candidate) => candidate.managementPk === "officetel-title"
+    )
+  );
+});
+
+test("도시형 생활주택과 오피스텔은 아파트 관리번호로 분류하지 않는다", () => {
+  assert.equal(
+    classifyBuildingComponent({
+      mainPurpsCdNm: "공동주택",
+      etcPurps: "공동주택(아파트-도시형생활주택)",
+    }),
+    "apartment-mixed-housing"
+  );
+  assert.equal(
+    classifyBuildingComponent({
+      mainPurpsCdNm: "업무시설",
+      etcPurps: "오피스텔",
+    }),
+    "non-apartment"
   );
 });
 
@@ -149,16 +229,30 @@ function source(sigunguCd, bjdongCd, bun, ji) {
   return { sigunguCd, bjdongCd, platGbCd: "0", bun, ji };
 }
 
-function titleRow({ source: rowSource, name, roadAddress, households, approvalDate }) {
+function titleRow({
+  source: rowSource,
+  managementPk,
+  name,
+  roadAddress,
+  households,
+  approvalDate,
+  mainPurpose = "공동주택",
+  etcPurpose = "",
+  dongName = "",
+}) {
   return {
     ...rowSource,
-    mgmBldrgstPk: `${rowSource.sigunguCd}-${rowSource.bjdongCd}-${rowSource.bun}-${rowSource.ji}`,
+    mgmBldrgstPk:
+      managementPk ||
+      `${rowSource.sigunguCd}-${rowSource.bjdongCd}-${rowSource.bun}-${rowSource.ji}`,
     bldNm: name,
+    dongNm: dongName,
     platPlc: `서울특별시 시험구 시험동 ${Number(rowSource.bun)}-${Number(rowSource.ji)}`,
     newPlatPlc: roadAddress,
     hhldCnt: households,
     useAprDay: approvalDate,
-    mainPurpsCdNm: "공동주택",
+    mainPurpsCdNm: mainPurpose,
+    etcPurps: etcPurpose,
   };
 }
 

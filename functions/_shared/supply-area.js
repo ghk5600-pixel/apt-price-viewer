@@ -1,4 +1,5 @@
-export const SUPPLY_CALCULATION_VERSION = "supply-model-v4";
+export const SUPPLY_CALCULATION_VERSION =
+  "supply-model-v6-apartment-unit-filter";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 
 export const STANDARD_AREA_GROUPS = [
@@ -74,11 +75,34 @@ const NON_RESIDENTIAL_TERMS = [
   "지역",
 ];
 
+const EXCLUDED_APARTMENT_UNIT_MARKERS = [
+  "도시형생활주택",
+  "소형주택",
+  "청년안심주택",
+  "역세권청년주택",
+  "공공임대",
+  "국민임대",
+  "영구임대",
+  "행복주택",
+  "장기전세",
+  "매입임대",
+  "오피스텔",
+  "업무시설",
+  "판매시설",
+  "근린생활시설",
+  "생활숙박시설",
+  "다세대주택",
+  "연립주택",
+  "기숙사",
+];
+
 export function createCollectionState() {
   return {
     carryRows: [],
     patterns: [],
     processedRows: 0,
+    sourceRows: 0,
+    filteredRows: 0,
     processedUnits: 0,
     skippedUnits: 0,
     seenUnitHashes: [],
@@ -88,7 +112,11 @@ export function createCollectionState() {
 
 export function consumeBuildingAreaRows(inputState, rows, options = {}) {
   const state = normalizeCollectionState(inputState);
-  const incomingRows = (Array.isArray(rows) ? rows : []).map(compactAreaRow);
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const apartmentComponents = normalizeApartmentComponents(
+    options.apartmentComponents
+  );
+  const incomingRows = sourceRows.map(compactAreaRow);
   const combinedRows = [...state.carryRows, ...incomingRows]
     .sort((left, right) => unitRowKey(left).localeCompare(unitRowKey(right)));
   const groups = groupContiguousRows(combinedRows);
@@ -102,6 +130,11 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
     const unitHash = unitKey ? hashUnitKey(unitKey) : "";
     if (unitHash && seenUnitHashes.has(unitHash)) continue;
     if (unitHash) seenUnitHashes.add(unitHash);
+    if (!isSelectedApartmentUnit(groups[index], apartmentComponents)) {
+      state.filteredRows += groups[index].length;
+      state.skippedUnits += 1;
+      continue;
+    }
     const unit = buildUnitPattern(groups[index]);
     if (!unit) {
       state.skippedUnits += 1;
@@ -113,17 +146,8 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
 
   state.seenUnitHashes = [...seenUnitHashes];
   state.carryRows = isFinal || !groups.length ? [] : groups[groups.length - 1];
-  state.processedRows += Array.isArray(rows) ? rows.length : 0;
-  if (isFinal && state.carryRows.length) {
-    const unit = buildUnitPattern(state.carryRows);
-    if (unit) {
-      mergeUnitPattern(state.patterns, patternIndex, unit);
-      state.processedUnits += 1;
-    } else {
-      state.skippedUnits += 1;
-    }
-    state.carryRows = [];
-  }
+  state.sourceRows += sourceRows.length;
+  state.processedRows += sourceRows.length;
   return state;
 }
 
@@ -152,6 +176,8 @@ export function buildSupplyProfile({
     unitCount: patterns.reduce((sum, pattern) => sum + pattern.unitCount, 0),
     patternCount: patterns.length,
     processedRows: state.processedRows,
+    sourceRows: state.sourceRows,
+    filteredRows: state.filteredRows,
     skippedUnits: state.skippedUnits,
     groups,
   };
@@ -241,6 +267,61 @@ export function isResidentialCommonPurpose(value) {
   return hasResidentialTerm && !hasExcludedTerm;
 }
 
+export function isApartmentExclusivePurpose(value) {
+  const purpose = normalizeText(value);
+  if (!purpose) return false;
+  if (
+    EXCLUDED_APARTMENT_UNIT_MARKERS.some((marker) =>
+      purpose.includes(marker)
+    )
+  ) {
+    return false;
+  }
+  return purpose.includes("아파트") || purpose === "공동주택";
+}
+
+export function matchesApartmentComponent(rows, components) {
+  const selectors = normalizeApartmentComponents(components);
+  if (!selectors.length) return true;
+
+  const rowBuildingNames = new Set(
+    rows
+      .map((row) => normalizeComponentName(row?.bldNm))
+      .filter(Boolean)
+  );
+  const rowDongNames = new Set(
+    rows
+      .map((row) => normalizeDongName(row?.dongNm))
+      .filter(Boolean)
+  );
+  const namedSelectors = selectors.filter(
+    (selector) => selector.buildingName || selector.dongName
+  );
+  if (!namedSelectors.length || (!rowBuildingNames.size && !rowDongNames.size)) {
+    return true;
+  }
+  const hasComparableName = namedSelectors.some(
+    (selector) =>
+      (selector.buildingName && rowBuildingNames.size) ||
+      (selector.dongName && rowDongNames.size)
+  );
+  if (!hasComparableName) return true;
+
+  return namedSelectors.some((selector) => {
+    const buildingMatch =
+      selector.buildingName &&
+      [...rowBuildingNames].some(
+        (rowName) =>
+          rowName === selector.buildingName ||
+          rowName.includes(selector.buildingName) ||
+          selector.buildingName.includes(rowName)
+      );
+    const dongMatch =
+      selector.dongName && rowDongNames.has(selector.dongName);
+    return Boolean(buildingMatch || dongMatch);
+  });
+}
+
 export function normalizeDongName(value) {
   return normalizeText(value)
     .replace(/제/g, "")
@@ -254,6 +335,8 @@ function normalizeCollectionState(inputState) {
     carryRows: Array.isArray(state.carryRows) ? state.carryRows.map(compactAreaRow) : [],
     patterns: Array.isArray(state.patterns) ? state.patterns.map(compactStoredPattern) : [],
     processedRows: Number(state.processedRows) || 0,
+    sourceRows: Number(state.sourceRows) || Number(state.processedRows) || 0,
+    filteredRows: Number(state.filteredRows) || 0,
     processedUnits: Number(state.processedUnits) || 0,
     skippedUnits: Number(state.skippedUnits) || 0,
     seenUnitHashes: normalizeSeenUnitHashes(state),
@@ -290,6 +373,7 @@ function unitRowKey(row) {
 function compactAreaRow(row) {
   return {
     mgmBldrgstPk: String(row?.mgmBldrgstPk || ""),
+    bldNm: String(row?.bldNm || ""),
     dongNm: String(row?.dongNm || ""),
     hoNm: String(row?.hoNm || ""),
     exposPubuseGbCdNm: String(row?.exposPubuseGbCdNm || ""),
@@ -299,11 +383,46 @@ function compactAreaRow(row) {
   };
 }
 
+function isSelectedApartmentUnit(rows, apartmentComponents) {
+  const exclusiveRows = rows.filter(
+    (row) => normalizeText(row.exposPubuseGbCdNm) === "전유"
+  );
+  if (
+    !exclusiveRows.some((row) =>
+      isApartmentExclusivePurpose(rowPurpose(row))
+    )
+  ) {
+    return false;
+  }
+  return matchesApartmentComponent(rows, apartmentComponents);
+}
+
+function normalizeApartmentComponents(components) {
+  return (Array.isArray(components) ? components : [])
+    .map((component) => ({
+      managementPk: String(component?.managementPk || "").trim(),
+      buildingName: normalizeComponentName(component?.buildingName),
+      dongName: normalizeDongName(component?.dongName),
+      componentType: String(component?.componentType || "").trim(),
+    }))
+    .filter(
+      (component) =>
+        component.managementPk || component.buildingName || component.dongName
+    );
+}
+
+function normalizeComponentName(value) {
+  return normalizeText(value)
+    .replace(/공동주택/g, "")
+    .replace(/주상복합/g, "")
+    .replace(/아파트/g, "");
+}
+
 function buildUnitPattern(rows) {
   if (!rows.length) return null;
   const exclusiveRows = rows.filter((row) => normalizeText(row.exposPubuseGbCdNm) === "전유");
   const apartmentRows = exclusiveRows
-    .filter((row) => /아파트|공동주택/.test(rowPurpose(row)))
+    .filter((row) => isApartmentExclusivePurpose(rowPurpose(row)))
     .filter((row) => toArea(row.area) > 10)
     .sort((a, b) => toArea(b.area) - toArea(a.area));
   const exclusiveRow = apartmentRows[0];

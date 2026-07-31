@@ -28,22 +28,22 @@ on:
       max_complexes:
         description: "이번 실행에서 완료할 공급면적 단지 수"
         required: true
-        default: "3"
+        default: "500"
         type: string
       max_attempts:
         description: "완료 목표를 위해 탐색할 최대 단지 수"
         required: true
-        default: "12"
+        default: "500"
         type: string
       max_minutes:
         description: "최대 실행 시간(분)"
         required: true
-        default: "240"
+        default: "330"
         type: string
       max_api_calls:
         description: "공공데이터 API 최대 호출 수"
         required: true
-        default: "4500"
+        default: "9000"
         type: string
       retry_failed:
         description: "영구 실패 단지도 다시 시도"
@@ -73,10 +73,10 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
       PILOT_MODE: ${{ inputs.mode || 'catalog-and-collect' }}
-      PILOT_MAX_COMPLEXES: ${{ inputs.max_complexes || '3' }}
-      PILOT_MAX_ATTEMPTS: ${{ inputs.max_attempts || '12' }}
-      PILOT_MAX_MINUTES: ${{ inputs.max_minutes || '240' }}
-      PILOT_MAX_API_CALLS: ${{ inputs.max_api_calls || '4500' }}
+      PILOT_MAX_COMPLEXES: ${{ inputs.max_complexes || '500' }}
+      PILOT_MAX_ATTEMPTS: ${{ inputs.max_attempts || '500' }}
+      PILOT_MAX_MINUTES: ${{ inputs.max_minutes || '330' }}
+      PILOT_MAX_API_CALLS: ${{ inputs.max_api_calls || '9000' }}
       PILOT_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
       PILOT_REFRESH_CATALOG: ${{ inputs.refresh_catalog && '1' || '0' }}
       PILOT_REPORT_PATH: seoul-pilot-report.json
