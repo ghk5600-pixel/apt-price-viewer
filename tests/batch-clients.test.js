@@ -222,6 +222,34 @@ test("Cloudflare D1 오류 메시지를 실행 로그에 노출한다", async ()
   );
 });
 
+test("Cloudflare D1 연결 오류를 재시도한 뒤 쿼리를 완료한다", async () => {
+  let requestCount = 0;
+  const delays = [];
+  const client = createD1RestClient({
+    accountId: "account-id",
+    databaseId: "database-id",
+    apiToken: "api-token",
+    retryDelays: [25],
+    sleepImpl: async (delay) => delays.push(delay),
+    fetchImpl: async () => {
+      requestCount += 1;
+      if (requestCount === 1) throw new TypeError("fetch failed");
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [{ success: true, results: [{ value: "recovered" }] }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    },
+  });
+
+  const result = await client.query("SELECT 1");
+  assert.equal(requestCount, 2);
+  assert.deepEqual(delays, [25]);
+  assert.equal(result.results[0].value, "recovered");
+});
+
 test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 교체한다", async () => {
   const calls = [];
   const client = createD1RestClient({

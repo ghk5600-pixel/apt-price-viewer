@@ -62,11 +62,17 @@ const PILOT_SCHEMA = [
     ON supply_batch_runs (started_at)`,
 ];
 
+const D1_RETRY_DELAYS = [1_000, 3_000, 10_000];
+const D1_RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
 export function createD1RestClient({
   accountId,
   databaseId,
   apiToken,
   fetchImpl = globalThis.fetch,
+  timeoutMs = 30_000,
+  retryDelays = D1_RETRY_DELAYS,
+  sleepImpl = sleep,
 }) {
   if (!accountId) throw new Error("CLOUDFLARE_ACCOUNT_ID is required.");
   if (!databaseId) throw new Error("CLOUDFLARE_D1_DATABASE_ID is required.");
@@ -79,28 +85,46 @@ export function createD1RestClient({
     const normalizedParams = params.map((value) =>
       value === null || value === undefined ? null : String(value)
     );
-    const response = await fetchImpl(endpoint, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ sql, params: normalizedParams }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const payload = await response.json().catch(() => ({}));
-    const result = Array.isArray(payload.result) ? payload.result[0] : payload.result;
-    if (!response.ok || !payload.success || result?.success === false) {
-      const details = [
-        ...(Array.isArray(payload.errors) ? payload.errors : []),
-        ...(Array.isArray(result?.errors) ? result.errors : []),
-      ]
-        .map((error) => error?.message || error?.code)
-        .filter(Boolean)
-        .join(", ");
-      throw new Error(`Cloudflare D1 query failed: ${details || response.status}`);
+    let lastError;
+    for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+      try {
+        const response = await fetchImpl(endpoint, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ sql, params: normalizedParams }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        const payload = await response.json().catch(() => ({}));
+        const result = Array.isArray(payload.result)
+          ? payload.result[0]
+          : payload.result;
+        if (!response.ok || !payload.success || result?.success === false) {
+          const details = [
+            ...(Array.isArray(payload.errors) ? payload.errors : []),
+            ...(Array.isArray(result?.errors) ? result.errors : []),
+          ]
+            .map((error) => error?.message || error?.code)
+            .filter(Boolean)
+            .join(", ");
+          const error = new Error(
+            `Cloudflare D1 query failed: ${details || response.status}`
+          );
+          error.retryable = D1_RETRYABLE_STATUSES.has(response.status);
+          throw error;
+        }
+        return result || { results: [] };
+      } catch (error) {
+        lastError = error;
+        if (attempt >= retryDelays.length || !isRetryableD1Error(error)) {
+          throw error;
+        }
+        await sleepImpl(retryDelays[attempt]);
+      }
     }
-    return result || { results: [] };
+    throw lastError;
   }
 
   return {
@@ -390,6 +414,19 @@ export function createD1RestClient({
       );
     },
   };
+}
+
+function isRetryableD1Error(error) {
+  return (
+    error?.retryable === true ||
+    error?.name === "TimeoutError" ||
+    error?.name === "AbortError" ||
+    /fetch failed|network|socket/i.test(String(error?.message || ""))
+  );
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function ensureColumns(query, tableName, columns) {
