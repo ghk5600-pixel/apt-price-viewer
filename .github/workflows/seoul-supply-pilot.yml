@@ -36,6 +36,14 @@ on:
           - catalog-and-collect
           - catalog
           - collect
+      catalog_strategy:
+        description: "단지 카탈로그 방식"
+        required: true
+        default: "master"
+        type: choice
+        options:
+          - master
+          - decade
       max_complexes:
         description: "이번 실행에서 완료할 공급면적 단지 수"
         required: true
@@ -98,6 +106,7 @@ jobs:
       PILOT_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
       PILOT_REFRESH_CATALOG: ${{ inputs.refresh_catalog && '1' || '0' }}
       PILOT_ENABLE_LEDGER_FALLBACK: ${{ inputs.ledger_fallback && '1' || '0' }}
+      PILOT_CATALOG_STRATEGY: ${{ inputs.catalog_strategy || 'master' }}
       PILOT_REPORT_PATH: seoul-pilot-report.json
       PILOT_REPORT_HTML_PATH: seoul-pilot-report.html
       PILOT_REPORT_CSV_PATH: seoul-pilot-report.csv

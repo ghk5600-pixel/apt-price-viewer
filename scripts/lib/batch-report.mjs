@@ -65,6 +65,7 @@ export function buildReportView(report) {
     summary: {
       sourceRows: Number(report?.catalog?.sourceApartmentRows) || 0,
       discovered: Number(report?.catalog?.discoveredComplexes) || 0,
+      master: Number(report?.catalog?.masterComplexes) || 0,
       eligible: Number(report?.catalog?.eligibleComplexes) || 0,
       success: successes.length,
       review: reviews.length,
@@ -86,6 +87,7 @@ function renderHtml(report, view) {
   const generatedAt = displayDateTime(report?.finishedAt || report?.startedAt);
   const summaryCards = [
     ["서울 K-apt 후보", view.summary.sourceRows, "neutral"],
+    ["공통 카탈로그", view.summary.master, "neutral"],
     ["최종 계산 대상", view.summary.eligible, "neutral"],
     ["성공", view.summary.success, "success"],
     ["재검토", view.summary.review, "review"],

@@ -124,36 +124,58 @@ export function createD1RestClient({
       );
     },
 
-    async getCatalogCount(catalogVersion = "") {
-      const result = catalogVersion
-        ? await query(
-            "SELECT COUNT(*) AS count FROM supply_batch_catalog WHERE catalog_version = ?1",
-            [catalogVersion]
-          )
-        : await query("SELECT COUNT(*) AS count FROM supply_batch_catalog");
+    async getCatalogCount(
+      catalogVersion = "",
+      { approvalDateFrom = "", approvalDateTo = "" } = {}
+    ) {
+      const conditions = [];
+      const params = [];
+      if (catalogVersion) {
+        conditions.push(`catalog_version = ?${params.length + 1}`);
+        params.push(catalogVersion);
+      }
+      if (approvalDateFrom) {
+        conditions.push(`approval_date >= ?${params.length + 1}`);
+        params.push(approvalDateFrom);
+      }
+      if (approvalDateTo) {
+        conditions.push(`approval_date <= ?${params.length + 1}`);
+        params.push(approvalDateTo);
+      }
+      const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
+      const result = await query(
+        `SELECT COUNT(*) AS count FROM supply_batch_catalog${where}`,
+        params
+      );
       return Number(result.results?.[0]?.count || 0);
     },
 
     async replaceCatalog(
       entries,
       catalogVersion,
-      { catalogScope = "" } = {}
+      { catalogScope = "", replaceAll = false } = {}
     ) {
-      const previous = await query(
-        `SELECT complex_key FROM supply_batch_catalog
-         WHERE catalog_scope = ?1
-            OR (catalog_scope = '' AND catalog_version = ?2)`,
-        [catalogScope, catalogVersion]
-      );
+      const previous = replaceAll
+        ? await query("SELECT complex_key FROM supply_batch_catalog")
+        : await query(
+            `SELECT complex_key FROM supply_batch_catalog
+             WHERE catalog_scope = ?1
+                OR (catalog_scope = '' AND catalog_version = ?2)`,
+            [catalogScope, catalogVersion]
+          );
       const previousKeys = new Set(
         (previous.results || []).map((row) => String(row.complex_key || ""))
       );
-      await query(
-        `DELETE FROM supply_batch_catalog
-         WHERE catalog_scope = ?1
-            OR (catalog_scope = '' AND catalog_version = ?2)`,
-        [catalogScope, catalogVersion]
-      );
+      if (replaceAll) {
+        await query("DELETE FROM supply_batch_catalog");
+      } else {
+        await query(
+          `DELETE FROM supply_batch_catalog
+           WHERE catalog_scope = ?1
+              OR (catalog_scope = '' AND catalog_version = ?2)`,
+          [catalogScope, catalogVersion]
+        );
+      }
 
       const sql = `INSERT INTO supply_batch_catalog (
           complex_key, kapt_code, complex_name, bjd_code, sido_name, sigungu_name,
@@ -229,9 +251,11 @@ export function createD1RestClient({
       }
 
       const currentKeys = new Set(entries.map((entry) => entry.complexKey));
-      const staleKeys = [...previousKeys].filter(
-        (complexKey) => complexKey && !currentKeys.has(complexKey)
-      );
+      const staleKeys = replaceAll
+        ? []
+        : [...previousKeys].filter(
+            (complexKey) => complexKey && !currentKeys.has(complexKey)
+          );
       if (staleKeys.length) {
         await query(
           `DELETE FROM supply_profile_cache
@@ -241,18 +265,30 @@ export function createD1RestClient({
       }
     },
 
-    async listCatalog(catalogVersion = "") {
-      const result = catalogVersion
-        ? await query(
-            `SELECT * FROM supply_batch_catalog
-             WHERE catalog_version = ?1
-             ORDER BY priority_rank ASC`,
-            [catalogVersion]
-          )
-        : await query(
-            `SELECT * FROM supply_batch_catalog
-             ORDER BY catalog_scope ASC, priority_rank ASC`
-          );
+    async listCatalog(
+      catalogVersion = "",
+      { approvalDateFrom = "", approvalDateTo = "" } = {}
+    ) {
+      const conditions = [];
+      const params = [];
+      if (catalogVersion) {
+        conditions.push(`catalog_version = ?${params.length + 1}`);
+        params.push(catalogVersion);
+      }
+      if (approvalDateFrom) {
+        conditions.push(`approval_date >= ?${params.length + 1}`);
+        params.push(approvalDateFrom);
+      }
+      if (approvalDateTo) {
+        conditions.push(`approval_date <= ?${params.length + 1}`);
+        params.push(approvalDateTo);
+      }
+      const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
+      const result = await query(
+        `SELECT * FROM supply_batch_catalog${where}
+         ORDER BY priority_rank ASC`,
+        params
+      );
       return result.results || [];
     },
 

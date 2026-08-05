@@ -23,11 +23,13 @@ import {
   buildPilotCatalogEntry,
   buildPilotCatalogVersion,
   PILOT_TRADE_LOOKBACK_MONTHS,
+  SEOUL_MASTER_CATALOG_VERSION,
   sortPilotCatalog,
 } from "./lib/pilot-catalog.mjs";
 
 const SEOUL_SIDO_CODE = "11";
 const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
+const VALID_CATALOG_STRATEGIES = new Set(["master", "decade"]);
 
 const config = {
   approvalDateFrom: readYmd("PILOT_APPROVAL_FROM", "20200101"),
@@ -41,6 +43,11 @@ const config = {
   refreshCatalog: process.env.PILOT_REFRESH_CATALOG === "1",
   retryFailed: process.env.PILOT_RETRY_FAILED === "1",
   enableLedgerFallback: process.env.PILOT_ENABLE_LEDGER_FALLBACK === "1",
+  catalogStrategy: readChoice(
+    "PILOT_CATALOG_STRATEGY",
+    "master",
+    VALID_CATALOG_STRATEGIES
+  ),
   reportPath: process.env.PILOT_REPORT_PATH || "seoul-pilot-report.json",
   reportHtmlPath:
     process.env.PILOT_REPORT_HTML_PATH || "seoul-pilot-report.html",
@@ -52,12 +59,14 @@ if (config.approvalDateFrom > config.approvalDateTo) {
 }
 
 const PILOT_SCOPE =
-  `seoul-sale-apartment-${config.approvalDateFrom}-` +
-  `${config.approvalDateTo}-households-200`;
-const pilotCatalogVersion = buildPilotCatalogVersion(
-  config.approvalDateFrom,
-  config.approvalDateTo
-);
+  config.catalogStrategy === "master"
+    ? "seoul-sale-apartment-master-households-200"
+    : `seoul-sale-apartment-${config.approvalDateFrom}-` +
+      `${config.approvalDateTo}-households-200`;
+const pilotCatalogVersion =
+  config.catalogStrategy === "master"
+    ? SEOUL_MASTER_CATALOG_VERSION
+    : buildPilotCatalogVersion(config.approvalDateFrom, config.approvalDateTo);
 
 const startedAt = new Date().toISOString();
 const runId =
@@ -71,7 +80,7 @@ let stoppedReason = "";
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.08.05-01-rc.1",
+  version: "v2026.08.05-01-rc.2",
   runId,
   scope: {
     region: "서울특별시",
@@ -88,6 +97,7 @@ const report = {
     requiredRtmsApartmentSaleMatch: true,
     rtmsLookbackMonths: PILOT_TRADE_LOOKBACK_MONTHS,
     catalogVersion: pilotCatalogVersion,
+    catalogStrategy: config.catalogStrategy,
   },
   config,
   startedAt,
@@ -98,6 +108,7 @@ const report = {
     sourceApartmentRows: 0,
     discoveredComplexes: 0,
     eligibleComplexes: 0,
+    masterComplexes: 0,
     exclusions: {},
     excludedComplexes: [],
     errors: [],
@@ -192,7 +203,8 @@ async function buildCatalogWhenNeeded() {
   const existingCount = await d1.getCatalogCount(pilotCatalogVersion);
   if (existingCount > 0 && !config.refreshCatalog) {
     report.catalog.reusedExistingCatalog = true;
-    report.catalog.eligibleComplexes = existingCount;
+    report.catalog.masterComplexes = existingCount;
+    report.catalog.eligibleComplexes = await getSelectedCatalogCount();
     console.log(`기존 서울 시험 카탈로그 ${existingCount}개를 재사용합니다.`);
     return;
   }
@@ -219,8 +231,14 @@ async function buildCatalogWhenNeeded() {
     try {
       const basicInfo = await molit.fetchAptBasicInfo(candidate.kaptCode);
       return buildPilotCatalogEntry(candidate, basicInfo, startedAt, {
-        approvalDateFrom: config.approvalDateFrom,
-        approvalDateTo: config.approvalDateTo,
+        approvalDateFrom:
+          config.catalogStrategy === "master"
+            ? "00010101"
+            : config.approvalDateFrom,
+        approvalDateTo:
+          config.catalogStrategy === "master"
+            ? "99991231"
+            : config.approvalDateTo,
       });
     } catch (error) {
       report.catalog.errors.push({
@@ -255,9 +273,16 @@ async function buildCatalogWhenNeeded() {
     ...reusedTradeMatches,
     ...(await verifyApartmentSaleMatches(entriesNeedingTradeVerification)),
   ];
-  const buildingPurposeResults = await verifyBuildingPurposes(
-    verifiedTradeMatches.filter((entry) => entry.eligible)
-  );
+  const buildingPurposeResults =
+    config.catalogStrategy === "master"
+      ? verifiedTradeMatches.filter((entry) => entry.eligible)
+      : await verifyBuildingPurposes(
+          verifiedTradeMatches.filter((entry) => entry.eligible)
+        );
+  if (config.catalogStrategy === "master") {
+    report.catalog.buildingPurposeVerification.strategy =
+      "permit-profile-household-validation";
+  }
   const purposeByKey = new Map(
     buildingPurposeResults.map((result) => [result.complexKey, result])
   );
@@ -289,9 +314,11 @@ async function buildCatalogWhenNeeded() {
     }
   }
   const eligible = sortPilotCatalog(finalResults.filter((result) => result.eligible));
-  report.catalog.eligibleComplexes = eligible.length;
+  report.catalog.masterComplexes = eligible.length;
+  report.catalog.eligibleComplexes = eligible.filter(isInSelectedDateRange).length;
   await d1.replaceCatalog(eligible, pilotCatalogVersion, {
     catalogScope: PILOT_SCOPE,
+    replaceAll: config.catalogStrategy === "master",
   });
   console.log(`시험 대상 ${eligible.length}개 단지를 D1 카탈로그에 저장했습니다.`);
 }
@@ -374,7 +401,9 @@ async function discoverSeoulCandidates() {
 }
 
 async function collectProfiles() {
-  const catalog = await d1.listCatalog(pilotCatalogVersion);
+  const catalog = await d1.listCatalog(pilotCatalogVersion, getCatalogDateFilter());
+  report.catalog.masterComplexes ||= await d1.getCatalogCount(pilotCatalogVersion);
+  report.catalog.eligibleComplexes = catalog.length;
   for (const row of catalog) {
     if (
       completedCount >= config.maxComplexes ||
@@ -460,6 +489,26 @@ async function collectProfiles() {
   ) {
     stoppedReason ||= "attempt-limit-reached";
   }
+}
+
+function getCatalogDateFilter() {
+  return config.catalogStrategy === "master"
+    ? {
+        approvalDateFrom: config.approvalDateFrom,
+        approvalDateTo: config.approvalDateTo,
+      }
+    : {};
+}
+
+async function getSelectedCatalogCount() {
+  return d1.getCatalogCount(pilotCatalogVersion, getCatalogDateFilter());
+}
+
+function isInSelectedDateRange(entry) {
+  return (
+    entry.approvalDate >= config.approvalDateFrom &&
+    entry.approvalDate <= config.approvalDateTo
+  );
 }
 
 async function verifyApartmentSaleMatches(entries) {
@@ -974,6 +1023,9 @@ function printSummary() {
     `서울 ${config.approvalDateFrom}~${config.approvalDateTo} ` +
       `배치 상태: ${report.status}`
   );
+  if (config.catalogStrategy === "master") {
+    console.log(`서울 공통 카탈로그: ${report.catalog.masterComplexes}개`);
+  }
   console.log(`카탈로그 대상: ${report.catalog.eligibleComplexes}개`);
   console.log(`이번 실행 완료: ${completedCount}개`);
   console.log(`공공데이터 API 호출: ${apiCallCount}회`);

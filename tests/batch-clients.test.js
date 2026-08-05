@@ -354,6 +354,85 @@ test("연대별 카탈로그 교체는 해당 범위에서 빠진 공급면적 �
   assert.deepEqual(JSON.parse(cacheDelete.params[0]), ["aptlist-old"]);
 });
 
+test("서울 공통 카탈로그를 준공연대 범위로 조회한다", async () => {
+  const calls = [];
+  const client = createD1RestClient({
+    accountId: "account-id",
+    databaseId: "database-id",
+    apiToken: "api-token",
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body);
+      calls.push(request);
+      const results = /COUNT\(\*\)/.test(request.sql)
+        ? [{ count: 26 }]
+        : [{ complex_key: "aptlist-A1", approval_date: "20260101" }];
+      return new Response(
+        JSON.stringify({ success: true, result: [{ success: true, results }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    },
+  });
+
+  const options = {
+    approvalDateFrom: "20200101",
+    approvalDateTo: "20291231",
+  };
+  const count = await client.getCatalogCount(
+    "seoul-sale-apartment-master-v1",
+    options
+  );
+  const rows = await client.listCatalog(
+    "seoul-sale-apartment-master-v1",
+    options
+  );
+
+  assert.equal(count, 26);
+  assert.equal(rows.length, 1);
+  for (const call of calls) {
+    assert.match(call.sql, /catalog_version = \?1/);
+    assert.match(call.sql, /approval_date >= \?2/);
+    assert.match(call.sql, /approval_date <= \?3/);
+    assert.deepEqual(call.params, [
+      "seoul-sale-apartment-master-v1",
+      "20200101",
+      "20291231",
+    ]);
+  }
+});
+
+test("공통 카탈로그 재생성은 기존 공급면적 프로필을 보존한다", async () => {
+  const calls = [];
+  const client = createD1RestClient({
+    accountId: "account-id",
+    databaseId: "database-id",
+    apiToken: "api-token",
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body);
+      calls.push(request);
+      const results = /SELECT complex_key/.test(request.sql)
+        ? [{ complex_key: "aptlist-existing" }]
+        : [];
+      return new Response(
+        JSON.stringify({ success: true, result: [{ success: true, results }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    },
+  });
+
+  await client.replaceCatalog([], "seoul-sale-apartment-master-v1", {
+    catalogScope: "seoul-sale-apartment-master-households-200",
+    replaceAll: true,
+  });
+
+  assert.match(calls[0].sql, /SELECT complex_key FROM supply_batch_catalog/);
+  assert.equal(calls[0].params.length, 0);
+  assert.match(calls[1].sql, /^DELETE FROM supply_batch_catalog$/);
+  assert.equal(
+    calls.some((call) => /DELETE FROM supply_profile_cache/.test(call.sql)),
+    false
+  );
+});
+
 test("permit API rows are collected through the final page", async () => {
   const requests = [];
   const client = createMolitBatchClient({

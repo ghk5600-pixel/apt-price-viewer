@@ -5,6 +5,8 @@ export const PILOT_MIN_HOUSEHOLDS = 200;
 export const PILOT_TRADE_LOOKBACK_MONTHS = 24;
 export const PILOT_CATALOG_VERSION =
   "seoul-sale-apartment-v8-decade-report";
+export const SEOUL_MASTER_CATALOG_VERSION =
+  "seoul-sale-apartment-master-v1";
 
 export function buildPilotCatalogVersion(
   approvalDateFrom = PILOT_APPROVAL_DATE_FROM,

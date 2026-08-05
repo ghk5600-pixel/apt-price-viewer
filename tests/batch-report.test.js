@@ -15,6 +15,7 @@ test("배치 보고서를 성공·재검토·실패·계산 전 실패로 분류
     catalog: {
       sourceApartmentRows: 100,
       discoveredComplexes: 100,
+      masterComplexes: 70,
       eligibleComplexes: 3,
       exclusions: {
         "built-before-target-range": 30,
@@ -68,9 +69,11 @@ test("배치 보고서를 성공·재검토·실패·계산 전 실패로 분류
   assert.equal(view.lateExclusions.length, 1);
   assert.equal(view.apiErrors.length, 1);
   assert.equal(view.summary.apiError, 1);
+  assert.equal(view.summary.master, 70);
 
   const rendered = renderBatchReport(report);
   assert.match(rendered.html, /서울 아파트 공급면적 배치 보고서/);
+  assert.match(rendered.html, /공통 카탈로그/);
   assert.match(rendered.html, /정상 단지/);
   assert.match(rendered.html, /재검토 단지/);
   assert.match(rendered.html, /관리번호 실패 단지/);
