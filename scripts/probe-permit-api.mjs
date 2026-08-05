@@ -91,42 +91,60 @@ async function probeWithRetry(endpoint) {
 }
 
 async function probeEndpoint({ service, operation, baseUrl }) {
-  const url = new URL(`${baseUrl}/${operation}`);
-  url.searchParams.set("serviceKey", SERVICE_KEY);
-  Object.entries(source).forEach(([key, value]) => url.searchParams.set(key, value));
-  url.searchParams.set("_type", "json");
-  url.searchParams.set("pageNo", "1");
-  url.searchParams.set("numOfRows", "1000");
+  const items = [];
+  let pageNo = 1;
+  let totalCount = Number.POSITIVE_INFINITY;
+  let responseStatus = 0;
+  let resultCode = "";
+  let resultMessage = "";
+  let responsePreview = "";
 
-  const response = await fetch(url, {
-    headers: { accept: "application/json, text/plain, */*" },
-    signal: AbortSignal.timeout(60_000),
-  });
-  const text = await response.text();
-  const payload = parsePayload(text);
-  const header = payload?.response?.header || {};
-  const body = payload?.response?.body || {};
-  const items = normalizeItems(body.items || body.item);
-  const resultCode = String(header.resultCode || extractXml(text, "resultCode") || "");
-  const resultMessage = String(
-    header.resultMsg ||
-      extractXml(text, "resultMsg") ||
-      extractXml(text, "returnAuthMsg") ||
-      ""
-  );
+  while (items.length < totalCount) {
+    const url = new URL(`${baseUrl}/${operation}`);
+    url.searchParams.set("serviceKey", SERVICE_KEY);
+    Object.entries(source).forEach(([key, value]) => url.searchParams.set(key, value));
+    url.searchParams.set("_type", "json");
+    url.searchParams.set("pageNo", String(pageNo));
+    url.searchParams.set("numOfRows", "1000");
+
+    const response = await fetch(url, {
+      headers: { accept: "application/json, text/plain, */*" },
+      signal: AbortSignal.timeout(60_000),
+    });
+    const text = await response.text();
+    const payload = parsePayload(text);
+    const header = payload?.response?.header || {};
+    const body = payload?.response?.body || {};
+    const pageItems = normalizeItems(body.items || body.item);
+    responseStatus = response.status;
+    resultCode = String(header.resultCode || extractXml(text, "resultCode") || "");
+    resultMessage = String(
+      header.resultMsg ||
+        extractXml(text, "resultMsg") ||
+        extractXml(text, "returnAuthMsg") ||
+        ""
+    );
+    responsePreview = pageItems.length ? "" : compactText(text);
+    if (!response.ok || (resultCode && !["00", "000"].includes(resultCode))) break;
+    items.push(...pageItems);
+    totalCount = Math.max(0, Number(body.totalCount || items.length));
+    if (!pageItems.length || items.length >= totalCount) break;
+    pageNo += 1;
+  }
 
   return {
     service,
     operation,
-    ok: response.ok && (!resultCode || ["00", "000"].includes(resultCode)),
-    httpStatus: response.status,
+    ok: responseStatus >= 200 && responseStatus < 300 &&
+      (!resultCode || ["00", "000"].includes(resultCode)),
+    httpStatus: responseStatus,
     resultCode,
     resultMessage,
-    totalCount: Math.max(0, Number(body.totalCount || 0)),
+    totalCount: Number.isFinite(totalCount) ? totalCount : 0,
     returnedRows: items.length,
     fields: [...new Set(items.flatMap((item) => Object.keys(item || {})))].sort(),
-    samples: items.slice(0, 20).map(sanitizeItem),
-    responsePreview: items.length ? "" : compactText(text),
+    records: items.slice(0, 2_000).map(sanitizeItem),
+    responsePreview,
   };
 }
 
