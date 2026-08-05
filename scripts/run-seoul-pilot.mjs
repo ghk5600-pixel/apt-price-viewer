@@ -40,6 +40,10 @@ const config = {
   maxMinutes: readPositiveInteger("PILOT_MAX_MINUTES", 330),
   maxApiCalls: readPositiveInteger("PILOT_MAX_API_CALLS", 9_000),
   maxRetriesPerComplex: readPositiveInteger("PILOT_MAX_RETRIES_PER_COMPLEX", 3),
+  maxConsecutiveTransportFailures: readPositiveInteger(
+    "PILOT_MAX_CONSECUTIVE_TRANSPORT_FAILURES",
+    2
+  ),
   refreshCatalog: process.env.PILOT_REFRESH_CATALOG === "1",
   retryFailed: process.env.PILOT_RETRY_FAILED === "1",
   enableLedgerFallback: process.env.PILOT_ENABLE_LEDGER_FALLBACK === "1",
@@ -77,10 +81,11 @@ const deadline = Date.now() + config.maxMinutes * 60_000;
 let apiCallCount = 0;
 let completedCount = 0;
 let stoppedReason = "";
+let consecutiveTransportFailures = 0;
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.08.05-01-rc.2",
+  version: "v2026.08.05-01-rc.5",
   runId,
   scope: {
     region: "서울특별시",
@@ -135,6 +140,13 @@ const report = {
     skippedReady: 0,
     skippedWaiting: 0,
     skippedFailed: 0,
+    transportCircuit: {
+      threshold: config.maxConsecutiveTransportFailures,
+      consecutiveFailures: 0,
+      peakFailures: 0,
+      opened: false,
+      openedAtComplexKey: "",
+    },
     statusCounts: {},
     failures: [],
     results: [],
@@ -482,6 +494,28 @@ async function collectProfiles() {
     const result = await collectOneComplex(row, record);
     report.collection.results.push(result);
     if (result.status === "ready") completedCount += 1;
+    if (isTransportFailureResult(result)) {
+      consecutiveTransportFailures += 1;
+      report.collection.transportCircuit.consecutiveFailures =
+        consecutiveTransportFailures;
+      report.collection.transportCircuit.peakFailures = Math.max(
+        report.collection.transportCircuit.peakFailures,
+        consecutiveTransportFailures
+      );
+      if (
+        consecutiveTransportFailures >=
+        config.maxConsecutiveTransportFailures
+      ) {
+        report.collection.transportCircuit.opened = true;
+        report.collection.transportCircuit.openedAtComplexKey =
+          result.complexKey || "";
+        stoppedReason ||= "permit-api-transport-circuit-open";
+        break;
+      }
+    } else {
+      consecutiveTransportFailures = 0;
+      report.collection.transportCircuit.consecutiveFailures = 0;
+    }
   }
   if (
     completedCount < config.maxComplexes &&
@@ -489,6 +523,17 @@ async function collectProfiles() {
   ) {
     stoppedReason ||= "attempt-limit-reached";
   }
+}
+
+function isTransportFailureResult(result) {
+  const details = result?.errorDetails || {};
+  const message = `${details.resultMessage || ""} ${result?.error || ""}`;
+  return (
+    result?.status === "paused" &&
+    details.retryable === true &&
+    details.upstreamStatus == null &&
+    (details.resultCode === "UNKNOWN_ERROR" || /fetch failed/i.test(message))
+  );
 }
 
 function getCatalogDateFilter() {

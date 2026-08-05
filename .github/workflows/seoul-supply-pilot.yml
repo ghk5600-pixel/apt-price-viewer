@@ -65,6 +65,11 @@ on:
         required: true
         default: "9000"
         type: string
+      max_transport_failures:
+        description: "연속 API 연결 실패 시 배치 중단 기준"
+        required: true
+        default: "2"
+        type: string
       retry_failed:
         description: "영구 실패 단지도 다시 시도"
         required: true
@@ -104,6 +109,7 @@ jobs:
       PILOT_MAX_ATTEMPTS: ${{ inputs.max_attempts || '500' }}
       PILOT_MAX_MINUTES: ${{ inputs.max_minutes || '330' }}
       PILOT_MAX_API_CALLS: ${{ inputs.max_api_calls || '9000' }}
+      PILOT_MAX_CONSECUTIVE_TRANSPORT_FAILURES: ${{ inputs.max_transport_failures || '2' }}
       PILOT_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
       PILOT_REFRESH_CATALOG: ${{ inputs.refresh_catalog && '1' || '0' }}
       PILOT_ENABLE_LEDGER_FALLBACK: ${{ inputs.ledger_fallback && '1' || '0' }}
