@@ -40,6 +40,7 @@ const config = {
   maxRetriesPerComplex: readPositiveInteger("PILOT_MAX_RETRIES_PER_COMPLEX", 3),
   refreshCatalog: process.env.PILOT_REFRESH_CATALOG === "1",
   retryFailed: process.env.PILOT_RETRY_FAILED === "1",
+  enableLedgerFallback: process.env.PILOT_ENABLE_LEDGER_FALLBACK === "1",
   reportPath: process.env.PILOT_REPORT_PATH || "seoul-pilot-report.json",
   reportHtmlPath:
     process.env.PILOT_REPORT_HTML_PATH || "seoul-pilot-report.html",
@@ -533,12 +534,22 @@ async function collectOneComplex(row, record) {
   let retries = 0;
   const label = `${row.complex_name} (${row.kapt_code})`;
 
+  if (
+    config.retryFailed &&
+    record.status === "failed" &&
+    record.permitCollection?.status === "unavailable"
+  ) {
+    record.permitCollection.completedAt = "";
+  }
+
   if (!record.permitCollection?.completedAt) {
     try {
       const permitResult = await collectPermitProfile(record);
       record.permitCollection = permitResult.diagnostics;
       if (permitResult.profile) {
         applyPermitProfile(record, permitResult.profile, permitResult.diagnostics);
+      } else if (!config.enableLedgerFallback) {
+        markPermitUnavailable(record, permitResult.diagnostics);
       }
     } catch (error) {
       const details = normalizeErrorDetails(error, 1);
@@ -562,7 +573,11 @@ async function collectOneComplex(row, record) {
         record.status === "ready" ? SUPPLY_CALCULATION_VERSION : "",
       lastError: record.error || "",
     });
-    if (record.status === "ready" || record.status === "paused") {
+    if (
+      record.status === "ready" ||
+      record.status === "paused" ||
+      record.status === "failed"
+    ) {
       return buildCollectionResult(row, record);
     }
   }
@@ -745,6 +760,34 @@ function applyPermitProfile(record, profile, diagnostics) {
   record.failedPage = null;
   record.nextRetryAt = "";
   record.fetchedAt = new Date().toISOString();
+}
+
+function markPermitUnavailable(record, diagnostics) {
+  const attempts = diagnostics.attempts || [];
+  const hasRows = attempts.some(
+    (attempt) => attempt.typeRows > 0 || attempt.areaRows > 0
+  );
+  const resultCode = hasRows
+    ? "PERMIT_PROFILE_VALIDATION_FAILED"
+    : "PERMIT_PROFILE_NOT_FOUND";
+  const resultMessage = hasRows
+    ? "Permit rows were found, but apartment type areas or household totals did not match."
+    : "No apartment type rows were found in the approved permit services.";
+  record.status = "failed";
+  record.errorDetails = {
+    operation: "permit-profile",
+    pageNo: 1,
+    upstreamStatus: null,
+    resultCode,
+    resultMessage,
+    retryable: true,
+  };
+  record.error = resultMessage;
+  record.failedPage = 1;
+  record.nextRetryAt = "";
+  record.leaseUntil = "";
+  diagnostics.status = "unavailable";
+  diagnostics.strategy = "permit-only";
 }
 
 function buildCollectionResult(row, record, { reusedReady = false } = {}) {
