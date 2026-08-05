@@ -174,6 +174,35 @@ export function createD1RestClient({
       return Number(result.results?.[0]?.count || 0);
     },
 
+    async relabelCatalog({
+      fromVersion,
+      toVersion,
+      catalogScope = "",
+      approvalDateFrom = "",
+      approvalDateTo = "",
+    }) {
+      const conditions = ["catalog_version = ?1"];
+      const params = [fromVersion, toVersion, catalogScope, new Date().toISOString()];
+      if (approvalDateFrom) {
+        conditions.push(`approval_date >= ?${params.length + 1}`);
+        params.push(approvalDateFrom);
+      }
+      if (approvalDateTo) {
+        conditions.push(`approval_date <= ?${params.length + 1}`);
+        params.push(approvalDateTo);
+      }
+      await query(
+        `UPDATE supply_batch_catalog
+         SET catalog_version = ?2, catalog_scope = ?3, updated_at = ?4
+         WHERE ${conditions.join(" AND ")}`,
+        params
+      );
+      return this.getCatalogCount(toVersion, {
+        approvalDateFrom,
+        approvalDateTo,
+      });
+    },
+
     async replaceCatalog(
       entries,
       catalogVersion,

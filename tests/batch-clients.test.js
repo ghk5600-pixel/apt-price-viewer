@@ -250,6 +250,49 @@ test("Cloudflare D1 연결 오류를 재시도한 뒤 쿼리를 완료한다", a
   assert.equal(result.results[0].value, "recovered");
 });
 
+test("기존 2020년대 카탈로그를 새 계산 버전으로 이관한다", async () => {
+  const calls = [];
+  const client = createD1RestClient({
+    accountId: "account-id",
+    databaseId: "database-id",
+    apiToken: "api-token",
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      const isCount = /COUNT\(\*\)/.test(calls.at(-1).sql);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [
+            {
+              success: true,
+              results: isCount ? [{ count: 26 }] : [],
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    },
+  });
+
+  const count = await client.relabelCatalog({
+    fromVersion: "legacy-v7",
+    toVersion: "decade-v8",
+    catalogScope: "seoul-2020",
+    approvalDateFrom: "20200101",
+    approvalDateTo: "20291231",
+  });
+
+  assert.equal(count, 26);
+  assert.match(calls[0].sql, /UPDATE supply_batch_catalog/);
+  assert.deepEqual(calls[0].params.slice(0, 3), [
+    "legacy-v7",
+    "decade-v8",
+    "seoul-2020",
+  ]);
+  assert.match(calls[0].sql, /approval_date >= \?5/);
+  assert.match(calls[0].sql, /approval_date <= \?6/);
+});
+
 test("검증된 매매형 단지만 선정 버전과 함께 D1 카탈로그로 교체한다", async () => {
   const calls = [];
   const client = createD1RestClient({

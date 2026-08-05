@@ -28,6 +28,8 @@ import {
 } from "./lib/pilot-catalog.mjs";
 
 const SEOUL_SIDO_CODE = "11";
+const LEGACY_2020_CATALOG_VERSION =
+  "seoul-sale-apartment-v7-apartment-unit-filter";
 const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
 const VALID_CATALOG_STRATEGIES = new Set(["master", "decade"]);
 const PERMIT_RETRY_BACKOFF_MILLISECONDS = [
@@ -123,6 +125,7 @@ const report = {
     excludedComplexes: [],
     errors: [],
     reusedExistingCatalog: false,
+    reusedLegacyCatalogVersion: "",
     reusedCandidateCatalog: false,
     tradeVerification: {
       districts: 0,
@@ -217,7 +220,29 @@ async function run() {
 }
 
 async function buildCatalogWhenNeeded() {
-  const existingCount = await d1.getCatalogCount(pilotCatalogVersion);
+  let existingCount = await d1.getCatalogCount(pilotCatalogVersion);
+  if (
+    existingCount === 0 &&
+    !config.refreshCatalog &&
+    config.catalogStrategy === "decade" &&
+    config.approvalDateFrom === "20200101" &&
+    config.approvalDateTo === "20291231"
+  ) {
+    existingCount = await d1.relabelCatalog({
+      fromVersion: LEGACY_2020_CATALOG_VERSION,
+      toVersion: pilotCatalogVersion,
+      catalogScope: PILOT_SCOPE,
+      approvalDateFrom: config.approvalDateFrom,
+      approvalDateTo: config.approvalDateTo,
+    });
+    if (existingCount > 0) {
+      report.catalog.reusedLegacyCatalogVersion =
+        LEGACY_2020_CATALOG_VERSION;
+      console.log(
+        `기존 2020년대 검증 카탈로그 ${existingCount}개를 새 계산 모델로 이관했습니다.`
+      );
+    }
+  }
   if (existingCount > 0 && !config.refreshCatalog) {
     report.catalog.reusedExistingCatalog = true;
     report.catalog.masterComplexes = existingCount;
