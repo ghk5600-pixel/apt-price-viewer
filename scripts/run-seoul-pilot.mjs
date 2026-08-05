@@ -53,6 +53,7 @@ const config = {
   ),
   refreshCatalog: process.env.PILOT_REFRESH_CATALOG === "1",
   retryFailed: process.env.PILOT_RETRY_FAILED === "1",
+  retryWaiting: process.env.PILOT_RETRY_WAITING === "1",
   enableLedgerFallback: process.env.PILOT_ENABLE_LEDGER_FALLBACK === "1",
   catalogStrategy: readChoice(
     "PILOT_CATALOG_STRATEGY",
@@ -92,7 +93,7 @@ let consecutiveTransportFailures = 0;
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.08.05-01-rc.8",
+  version: "v2026.08.05-01-rc.9",
   runId,
   scope: {
     region: "서울특별시",
@@ -540,7 +541,8 @@ async function collectProfiles() {
     if (
       (record.status === "paused" || record.status === "upstream-pending") &&
       Number.isFinite(retryAt) &&
-      retryAt > Date.now()
+      retryAt > Date.now() &&
+      !config.retryWaiting
     ) {
       report.collection.skippedWaiting += 1;
       report.collection.results.push(buildCollectionResult(row, record));

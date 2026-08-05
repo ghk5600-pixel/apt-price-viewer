@@ -36,7 +36,7 @@ const [catalog, profiles, runs] = await Promise.all([
 ]);
 
 const report = {
-  version: "v2026.08.05-01-rc.8",
+  version: "v2026.08.05-01-rc.9",
   generatedAt: new Date().toISOString(),
   catalog: catalog.results || [],
   profiles: profiles.results || [],
