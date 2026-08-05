@@ -1,0 +1,37 @@
+name: Supply batch progress
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      SUPPLY_PROGRESS_REPORT_PATH: supply-progress-report.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Read D1 supply progress
+        run: node scripts/report-supply-progress.mjs
+
+      - name: Upload progress report
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-progress-${{ github.run_number }}
+          path: supply-progress-report.json
+          retention-days: 14
+
