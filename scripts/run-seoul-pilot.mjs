@@ -135,6 +135,12 @@ const report = {
       matchedComplexes: 0,
       reusedComplexes: 0,
     },
+    basicInfoVerification: {
+      requestedComplexes: 0,
+      successfulComplexes: 0,
+      failedComplexes: 0,
+      coverageRatio: 0,
+    },
     buildingPurposeVerification: {
       requestedComplexes: 0,
       verifiedComplexes: 0,
@@ -268,6 +274,7 @@ async function buildCatalogWhenNeeded() {
     );
   }
   console.log(`K-apt 단지 ${candidates.length}개의 기본정보를 확인합니다.`);
+  report.catalog.basicInfoVerification.requestedComplexes = candidates.length;
   const catalogResults = await mapWithConcurrency(candidates, 4, async (candidate) => {
     if (!hasBudget()) return null;
     try {
@@ -293,6 +300,20 @@ async function buildCatalogWhenNeeded() {
   });
 
   const validResults = catalogResults.filter(Boolean);
+  report.catalog.basicInfoVerification.successfulComplexes = validResults.length;
+  report.catalog.basicInfoVerification.failedComplexes =
+    candidates.length - validResults.length;
+  report.catalog.basicInfoVerification.coverageRatio = candidates.length
+    ? validResults.length / candidates.length
+    : 0;
+  if (
+    candidates.length > 0 &&
+    report.catalog.basicInfoVerification.coverageRatio < 0.95
+  ) {
+    throw new Error(
+      `K-apt basic-info coverage is too low: ${validResults.length}/${candidates.length}`
+    );
+  }
   const staticEligible = validResults.filter((result) => result.eligible);
   const reusedTradeMatches = [];
   const entriesNeedingTradeVerification = [];
@@ -315,6 +336,16 @@ async function buildCatalogWhenNeeded() {
     ...reusedTradeMatches,
     ...(await verifyApartmentSaleMatches(entriesNeedingTradeVerification)),
   ];
+  const tradeVerification = report.catalog.tradeVerification;
+  if (
+    tradeVerification.requestedMonths > 0 &&
+    tradeVerification.successfulMonths / tradeVerification.requestedMonths < 0.95
+  ) {
+    throw new Error(
+      `RTMS verification coverage is too low: ` +
+        `${tradeVerification.successfulMonths}/${tradeVerification.requestedMonths}`
+    );
+  }
   const buildingPurposeResults =
     config.catalogStrategy === "master"
       ? verifiedTradeMatches.filter((entry) => entry.eligible)
