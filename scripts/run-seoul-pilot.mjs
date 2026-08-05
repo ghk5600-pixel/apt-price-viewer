@@ -30,6 +30,11 @@ import {
 const SEOUL_SIDO_CODE = "11";
 const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
 const VALID_CATALOG_STRATEGIES = new Set(["master", "decade"]);
+const PERMIT_RETRY_BACKOFF_MILLISECONDS = [
+  15 * 60_000,
+  60 * 60_000,
+  6 * 60 * 60_000,
+];
 
 const config = {
   approvalDateFrom: readYmd("PILOT_APPROVAL_FROM", "20200101"),
@@ -479,7 +484,7 @@ async function collectProfiles() {
     if (
       (record.status === "paused" || record.status === "upstream-pending") &&
       Number.isFinite(retryAt) &&
-      retryAt > deadline
+      retryAt > Date.now()
     ) {
       report.collection.skippedWaiting += 1;
       report.collection.results.push(buildCollectionResult(row, record));
@@ -646,17 +651,30 @@ async function collectOneComplex(row, record) {
         markPermitUnavailable(record, permitResult.diagnostics);
       }
     } catch (error) {
+      const permitFailureCount =
+        Math.max(
+          0,
+          Number(record.permitCollection?.consecutiveFailures) || 0
+        ) + 1;
       const details = normalizeErrorDetails(error, 1);
       record.permitCollection = {
         status: "error",
         completedAt: "",
         attemptedAt: new Date().toISOString(),
+        consecutiveFailures: permitFailureCount,
         error: error.message,
         errorDetails: details,
       };
       record.errorDetails = details;
       record.error = `Permit API: ${error.message}`;
       pauseRecord(record);
+      const delayIndex = Math.min(
+        permitFailureCount - 1,
+        PERMIT_RETRY_BACKOFF_MILLISECONDS.length - 1
+      );
+      record.nextRetryAt = new Date(
+        Date.now() + PERMIT_RETRY_BACKOFF_MILLISECONDS[delayIndex]
+      ).toISOString();
     }
     record.leaseUntil = "";
     record.updatedAt = new Date().toISOString();
