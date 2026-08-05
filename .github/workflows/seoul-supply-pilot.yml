@@ -36,6 +36,7 @@ on:
           - catalog-and-collect
           - catalog
           - collect
+          - progress
       catalog_strategy:
         description: "단지 카탈로그 방식"
         required: true
@@ -84,7 +85,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: seoul-supply-area-pilot
+  group: ${{ inputs.mode == 'progress' && format('seoul-supply-progress-{0}', github.run_id) || 'seoul-supply-area-pilot' }}
   cancel-in-progress: false
 
 jobs:
@@ -110,6 +111,7 @@ jobs:
       PILOT_REPORT_PATH: seoul-pilot-report.json
       PILOT_REPORT_HTML_PATH: seoul-pilot-report.html
       PILOT_REPORT_CSV_PATH: seoul-pilot-report.csv
+      SUPPLY_PROGRESS_REPORT_PATH: supply-progress-report.json
 
     steps:
       - name: Checkout
@@ -124,10 +126,11 @@ jobs:
         run: npm test
 
       - name: Run Seoul pilot
+        if: inputs.mode != 'progress'
         run: npm run batch:seoul-pilot
 
       - name: Upload pilot report
-        if: always()
+        if: always() && inputs.mode != 'progress'
         uses: actions/upload-artifact@v4
         with:
           name: seoul-supply-${{ inputs.approval_from || '20200101' }}-${{ inputs.approval_to || '20291231' }}-${{ github.run_number }}
@@ -136,4 +139,16 @@ jobs:
             seoul-pilot-report.html
             seoul-pilot-report.csv
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Read D1 supply progress
+        if: inputs.mode == 'progress'
+        run: npm run report:supply-progress
+
+      - name: Upload progress report
+        if: inputs.mode == 'progress'
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-progress-${{ github.run_number }}
+          path: supply-progress-report.json
           retention-days: 14
