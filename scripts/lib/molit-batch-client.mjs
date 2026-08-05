@@ -1,6 +1,7 @@
 import {
   buildBuildingHubUrl,
   buildRtmsUrl,
+  parseJsonPreservingLongIntegers,
   parseRtmsXml,
 } from "../../functions/_shared/molit.js";
 
@@ -220,7 +221,7 @@ async function fetchJsonWithRetry(
         error.retryable = RETRYABLE_STATUSES.has(response.status);
         throw error;
       }
-      return text.trim() ? JSON.parse(text) : {};
+      return text.trim() ? parseJsonPreservingLongIntegers(text) : {};
     } catch (error) {
       lastError = sanitizeFetchError(error, operation, requestContext);
       if (error?.retryable === false || attempt === RETRY_DELAYS.length) break;

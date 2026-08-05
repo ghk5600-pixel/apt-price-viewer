@@ -5,6 +5,7 @@ import {
   getSearchParam,
   json,
   normalizeItems,
+  parseJsonPreservingLongIntegers,
   requireServiceKey,
 } from "../_shared/molit.js";
 import {
@@ -796,7 +797,7 @@ function isCredentialError(details) {
 function parseResponsePayload(text) {
   if (!text?.trim()) return {};
   try {
-    return JSON.parse(text);
+    return parseJsonPreservingLongIntegers(text);
   } catch {
     return null;
   }

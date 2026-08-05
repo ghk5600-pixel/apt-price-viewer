@@ -54,7 +54,7 @@ const config = {
   refreshCatalog: process.env.PILOT_REFRESH_CATALOG === "1",
   retryFailed: process.env.PILOT_RETRY_FAILED === "1",
   retryWaiting: process.env.PILOT_RETRY_WAITING === "1",
-  enableLedgerFallback: process.env.PILOT_ENABLE_LEDGER_FALLBACK === "1",
+  enableLedgerFallback: process.env.PILOT_ENABLE_LEDGER_FALLBACK !== "0",
   catalogStrategy: readChoice(
     "PILOT_CATALOG_STRATEGY",
     "master",
@@ -93,7 +93,7 @@ let consecutiveTransportFailures = 0;
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.08.05-01-rc.11",
+  version: "v2026.08.06-01-rc.1",
   runId,
   scope: {
     region: "서울특별시",
@@ -715,6 +715,8 @@ async function collectOneComplex(row, record) {
         applyPermitProfile(record, permitResult.profile, permitResult.diagnostics);
       } else if (!config.enableLedgerFallback) {
         markPermitUnavailable(record, permitResult.diagnostics);
+      } else {
+        prepareLedgerFallback(record, permitResult.diagnostics);
       }
     } catch (error) {
       const permitFailureCount =
@@ -976,6 +978,18 @@ function markPermitUnavailable(record, diagnostics) {
   record.leaseUntil = "";
   diagnostics.status = "unavailable";
   diagnostics.strategy = "permit-only";
+}
+
+function prepareLedgerFallback(record, diagnostics) {
+  diagnostics.status = "ledger-fallback";
+  diagnostics.strategy = "building-ledger";
+  record.profile = null;
+  record.status = "building";
+  record.error = "";
+  record.errorDetails = null;
+  record.failedPage = null;
+  record.nextRetryAt = "";
+  record.leaseUntil = "";
 }
 
 function buildCollectionResult(row, record, { reusedReady = false } = {}) {

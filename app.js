@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.08.05-01-rc.11";
+const APP_VERSION = "v2026.08.06-01-rc.1";
 const APP_UPDATED_AT = "2026-08-05";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
@@ -17,7 +17,7 @@ const BUILDING_HUB_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
 const DEFAULT_KAKAO_JAVASCRIPT_KEY = "f1381fcba950abff23056942bd19d544";
 const ADMIN_QUERY_PARAM = "admin";
-const SUPPLY_CALCULATION_VERSION = "supply-model-v7-permit-type-weighted";
+const SUPPLY_CALCULATION_VERSION = "supply-model-v8-hybrid-precise-ids";
 const SUPPLY_PROFILE_POLL_DELAY = 750;
 const SUPPLY_PROFILE_MAX_POLLS = 500;
 

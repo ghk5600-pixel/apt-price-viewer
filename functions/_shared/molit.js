@@ -49,7 +49,55 @@ export async function fetchJsonApi(url) {
   }
   const text = await response.text();
   if (!text.trim()) return {};
-  return JSON.parse(text);
+  return parseJsonPreservingLongIntegers(text);
+}
+
+export function parseJsonPreservingLongIntegers(text) {
+  const source = String(text || "");
+  let normalized = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      normalized += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      normalized += character;
+      continue;
+    }
+
+    if (character === "-" || /\d/.test(character)) {
+      const match = source.slice(index).match(
+        /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/
+      );
+      if (match) {
+        const token = match[0];
+        const digits = token.replace(/^-/, "");
+        normalized +=
+          !/[.eE]/.test(token) && digits.length >= 16
+            ? `"${token}"`
+            : token;
+        index += token.length - 1;
+        continue;
+      }
+    }
+
+    normalized += character;
+  }
+
+  return JSON.parse(normalized);
 }
 
 export async function fetchTextApi(url) {

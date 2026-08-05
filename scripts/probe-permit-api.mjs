@@ -1,4 +1,5 @@
 import { writeFile } from "node:fs/promises";
+import { parseJsonPreservingLongIntegers } from "../functions/_shared/molit.js";
 
 const SERVICE_KEY = process.env.MOLIT_SERVICE_KEY || "";
 const REPORT_PATH = process.env.PERMIT_PROBE_REPORT_PATH || "permit-probe-report.json";
@@ -150,7 +151,7 @@ async function probeEndpoint({ service, operation, baseUrl }) {
 
 function parsePayload(text) {
   try {
-    return JSON.parse(text);
+    return parseJsonPreservingLongIntegers(text);
   } catch {
     return {};
   }

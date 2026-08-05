@@ -1,5 +1,5 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v7-permit-type-weighted";
+  "supply-model-v8-hybrid-precise-ids";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 
 export const STANDARD_AREA_GROUPS = [

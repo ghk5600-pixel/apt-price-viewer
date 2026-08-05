@@ -539,6 +539,38 @@ test("permit API rows are collected through the final page", async () => {
   assert.deepEqual(requests.map((request) => request.pageNo), [1, 2]);
 });
 
+test("permit API management keys larger than Number.MAX_SAFE_INTEGER stay distinct", async () => {
+  const client = createMolitBatchClient({
+    serviceKey: "decoding-key",
+    fetchImpl: async () =>
+      new Response(
+        '{"response":{"header":{"resultCode":"00"},"body":' +
+          '{"items":{"item":[' +
+          '{"mgmTypeOulnPk":1000000000000000000001,"area":84.95},' +
+          '{"mgmTypeOulnPk":1000000000000000000002,"area":26.77}' +
+          ']},"totalCount":2,"numOfRows":1000}}}',
+        { status: 200, headers: { "content-type": "application/json" } }
+      ),
+  });
+
+  const result = await client.fetchPermitRows(
+    "housing-permit",
+    "getHpExposPubuseAreaInfo",
+    {
+      sigunguCd: "11740",
+      bjdongCd: "10600",
+      platGbCd: "0",
+      bun: "0030",
+      ji: "0004",
+    }
+  );
+
+  assert.deepEqual(
+    result.items.map((item) => item.mgmTypeOulnPk),
+    ["1000000000000000000001", "1000000000000000000002"]
+  );
+});
+
 test("permit API errors preserve the operation and page", async () => {
   const client = createMolitBatchClient({
     serviceKey: "decoding-key",
@@ -595,7 +627,7 @@ test("master catalog statuses are synchronized and undated rows are finalized", 
   assert.match(calls[1].sql, /APPROVAL_DATE_MISSING_OR_INVALID/);
   assert.deepEqual(calls[1].params.slice(0, 4), [
     "seoul-sale-apartment-master-v1",
-    "supply-model-v7-permit-type-weighted",
+    "supply-model-v8-hybrid-precise-ids",
     "19000101",
     "20991231",
   ]);

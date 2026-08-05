@@ -88,7 +88,7 @@ on:
       ledger_fallback:
         description: "인허가 실패 시 기존 건축물대장 전체 수집 사용"
         required: true
-        default: false
+        default: true
         type: boolean
 
       runner_os:
@@ -127,7 +127,7 @@ jobs:
       PILOT_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
       PILOT_RETRY_WAITING: ${{ inputs.retry_waiting && '1' || '0' }}
       PILOT_REFRESH_CATALOG: ${{ inputs.refresh_catalog && '1' || '0' }}
-      PILOT_ENABLE_LEDGER_FALLBACK: ${{ inputs.ledger_fallback && '1' || '0' }}
+      PILOT_ENABLE_LEDGER_FALLBACK: ${{ inputs.ledger_fallback == false && github.event_name == 'workflow_dispatch' && '0' || '1' }}
       PILOT_CATALOG_STRATEGY: ${{ inputs.catalog_strategy || 'master' }}
       PILOT_REPORT_PATH: seoul-pilot-report.json
       PILOT_REPORT_HTML_PATH: seoul-pilot-report.html
