@@ -86,6 +86,15 @@ on:
         default: false
         type: boolean
 
+      runner_os:
+        description: "GitHub Actions runner OS"
+        required: true
+        default: ubuntu-latest
+        type: choice
+        options:
+          - ubuntu-latest
+          - windows-latest
+
 permissions:
   contents: read
 
@@ -95,7 +104,7 @@ concurrency:
 
 jobs:
   run-pilot:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_os || 'ubuntu-latest' }}
     timeout-minutes: 330
     env:
       NODE_OPTIONS: --dns-result-order=ipv4first
