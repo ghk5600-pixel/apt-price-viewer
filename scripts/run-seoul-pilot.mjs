@@ -92,7 +92,7 @@ let consecutiveTransportFailures = 0;
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.08.05-01-rc.7",
+  version: "v2026.08.05-01-rc.8",
   runId,
   scope: {
     region: "서울특별시",
@@ -689,6 +689,10 @@ async function collectOneComplex(row, record) {
   let retries = 0;
   const label = `${row.complex_name} (${row.kapt_code})`;
 
+  if (shouldRestartPermitOnlyRecord(record)) {
+    record = createRecord(catalogRowToRequest(row));
+  }
+
   if (
     config.retryFailed &&
     record.status === "failed" &&
@@ -817,6 +821,16 @@ async function collectOneComplex(row, record) {
   }
 
   return buildCollectionResult(row, record);
+}
+
+function shouldRestartPermitOnlyRecord(record) {
+  if (config.enableLedgerFallback || record.profile) return false;
+  return (
+    record.status === "paused" ||
+    record.status === "upstream-pending" ||
+    record.permitCollection?.status === "ledger-fallback" ||
+    (record.sourcePlans || []).length > 0
+  );
 }
 
 async function collectPermitProfile(record) {

@@ -216,12 +216,13 @@ async function fetchJsonWithRetry(
       const text = await response.text();
       if (!response.ok) {
         const error = new Error(`${operation} responded with HTTP ${response.status}.`);
+        error.upstreamStatus = response.status;
         error.retryable = RETRYABLE_STATUSES.has(response.status);
         throw error;
       }
       return text.trim() ? JSON.parse(text) : {};
     } catch (error) {
-      lastError = sanitizeFetchError(error, operation);
+      lastError = sanitizeFetchError(error, operation, requestContext);
       if (error?.retryable === false || attempt === RETRY_DELAYS.length) break;
     }
   }
@@ -244,6 +245,7 @@ async function fetchTextWithRetry(
       const text = await response.text();
       if (!response.ok) {
         const error = new Error(`${operation} responded with HTTP ${response.status}.`);
+        error.upstreamStatus = response.status;
         error.retryable = RETRYABLE_STATUSES.has(response.status);
         throw error;
       }
@@ -286,12 +288,20 @@ function normalizeItems(items) {
   return Array.isArray(item) ? item : [item];
 }
 
-function sanitizeFetchError(error, operation) {
+function sanitizeFetchError(error, operation, requestContext = {}) {
   const isTimeout = error?.name === "TimeoutError" || error?.name === "AbortError";
   const result = new Error(
     isTimeout ? `${operation} timed out.` : error?.message || `${operation} failed.`
   );
   result.retryable = error?.retryable !== false;
+  result.details = {
+    operation,
+    pageNo: Math.max(1, Number(requestContext.pageNo) || 1),
+    upstreamStatus: Math.max(0, Number(error?.upstreamStatus) || 0) || null,
+    resultCode: isTimeout ? "TIMEOUT" : "UNKNOWN_ERROR",
+    resultMessage: result.message,
+    retryable: result.retryable,
+  };
   return result;
 }
 

@@ -539,6 +539,38 @@ test("permit API rows are collected through the final page", async () => {
   assert.deepEqual(requests.map((request) => request.pageNo), [1, 2]);
 });
 
+test("permit API errors preserve the operation and page", async () => {
+  const client = createMolitBatchClient({
+    serviceKey: "decoding-key",
+    fetchImpl: async () => {
+      const error = new TypeError("fetch failed");
+      error.retryable = false;
+      throw error;
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      client.fetchPermitRows(
+        "housing-permit",
+        "getHpMgmCoopTpOulnInfo",
+        {
+          sigunguCd: "11215",
+          bjdongCd: "10500",
+          platGbCd: "0",
+          bun: "0695",
+          ji: "0000",
+        }
+      ),
+    (error) => {
+      assert.equal(error.details.operation, "getHpMgmCoopTpOulnInfo");
+      assert.equal(error.details.pageNo, 1);
+      assert.equal(error.details.resultMessage, "fetch failed");
+      return true;
+    }
+  );
+});
+
 function apiResponse(body) {
   return new Response(
     JSON.stringify({
