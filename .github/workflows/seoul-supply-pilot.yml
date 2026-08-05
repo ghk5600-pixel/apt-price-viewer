@@ -112,7 +112,6 @@ jobs:
     runs-on: ${{ inputs.runner_os || 'ubuntu-latest' }}
     timeout-minutes: 330
     env:
-      NODE_OPTIONS: --dns-result-order=ipv4first
       MOLIT_SERVICE_KEY: ${{ secrets.MOLIT_SERVICE_KEY }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
