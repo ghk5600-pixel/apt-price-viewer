@@ -93,7 +93,7 @@ let consecutiveTransportFailures = 0;
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.08.05-01-rc.10",
+  version: "v2026.08.05-01-rc.11",
   runId,
   scope: {
     region: "서울특별시",
@@ -475,6 +475,10 @@ async function discoverSeoulCandidates() {
 }
 
 async function collectProfiles() {
+  if (config.catalogStrategy === "master") {
+    await d1.syncCatalogProfileStatuses(pilotCatalogVersion);
+    await d1.finalizeUndatedCatalog(pilotCatalogVersion);
+  }
   const catalog = await d1.listCatalog(pilotCatalogVersion, getCatalogDateFilter());
   report.catalog.masterComplexes ||= await d1.getCatalogCount(pilotCatalogVersion);
   report.catalog.eligibleComplexes = catalog.length;

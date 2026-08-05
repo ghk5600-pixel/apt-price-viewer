@@ -413,6 +413,58 @@ export function createD1RestClient({
       );
     },
 
+    async syncCatalogProfileStatuses(
+      catalogVersion,
+      calculationVersion = SUPPLY_CALCULATION_VERSION
+    ) {
+      await query(
+        `UPDATE supply_batch_catalog
+         SET profile_status = (
+               SELECT profile.status
+               FROM supply_profile_cache AS profile
+               WHERE profile.complex_key = supply_batch_catalog.complex_key
+                 AND profile.calculation_version = ?2
+             ),
+             profile_calculation_version = ?2,
+             updated_at = ?3
+         WHERE catalog_version = ?1
+           AND EXISTS (
+             SELECT 1
+             FROM supply_profile_cache AS profile
+             WHERE profile.complex_key = supply_batch_catalog.complex_key
+               AND profile.calculation_version = ?2
+           )`,
+        [catalogVersion, calculationVersion, new Date().toISOString()]
+      );
+    },
+
+    async finalizeUndatedCatalog(
+      catalogVersion,
+      { minimumDate = "19000101", maximumDate = "20991231" } = {}
+    ) {
+      await query(
+        `UPDATE supply_batch_catalog
+         SET profile_status = 'failed',
+             profile_calculation_version = ?2,
+             last_error = 'APPROVAL_DATE_MISSING_OR_INVALID',
+             updated_at = ?5
+         WHERE catalog_version = ?1
+           AND (
+             approval_date IS NULL
+             OR LENGTH(TRIM(approval_date)) <> 8
+             OR approval_date < ?3
+             OR approval_date > ?4
+           )`,
+        [
+          catalogVersion,
+          SUPPLY_CALCULATION_VERSION,
+          minimumDate,
+          maximumDate,
+          new Date().toISOString(),
+        ]
+      );
+    },
+
     async saveRun(run) {
       await query(
         `INSERT INTO supply_batch_runs (
