@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 
 const SERVICE_KEY = process.env.MOLIT_SERVICE_KEY || "";
 const REPORT_PATH = process.env.PERMIT_PROBE_REPORT_PATH || "permit-probe-report.json";
+const RETRY_DELAYS = [0, 5_000, 15_000, 30_000];
 const source = {
   sigunguCd: process.env.PERMIT_PROBE_SIGUNGU_CD || "11740",
   bjdongCd: process.env.PERMIT_PROBE_BJDONG_CD || "10300",
@@ -38,7 +39,7 @@ if (!SERVICE_KEY) throw new Error("MOLIT_SERVICE_KEY is required.");
 const startedAt = new Date().toISOString();
 const results = [];
 for (const endpoint of endpoints) {
-  const result = await probeEndpoint(endpoint);
+  const result = await probeWithRetry(endpoint);
   results.push(result);
   console.log(
     `${endpoint.operation}: HTTP ${result.httpStatus}, ` +
@@ -56,6 +57,38 @@ const report = {
 await writeFile(REPORT_PATH, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 
 if (!results.some((result) => result.ok)) process.exitCode = 2;
+
+async function probeWithRetry(endpoint) {
+  let lastError;
+  for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt += 1) {
+    if (RETRY_DELAYS[attempt]) await sleep(RETRY_DELAYS[attempt]);
+    try {
+      return {
+        ...(await probeEndpoint(endpoint)),
+        attempts: attempt + 1,
+      };
+    } catch (error) {
+      lastError = error;
+      console.warn(
+        `${endpoint.operation}: ${attempt + 1}차 연결 실패 - ${error.message}`
+      );
+    }
+  }
+  return {
+    service: endpoint.service,
+    operation: endpoint.operation,
+    ok: false,
+    httpStatus: 0,
+    resultCode: "NETWORK_ERROR",
+    resultMessage: lastError?.message || "Permit API request failed.",
+    totalCount: 0,
+    returnedRows: 0,
+    fields: [],
+    samples: [],
+    responsePreview: "",
+    attempts: RETRY_DELAYS.length,
+  };
+}
 
 async function probeEndpoint({ service, operation, baseUrl }) {
   const url = new URL(`${baseUrl}/${operation}`);
@@ -126,4 +159,8 @@ function extractXml(text, tagName) {
 
 function compactText(text) {
   return String(text || "").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
