@@ -240,12 +240,13 @@ function renderResultTable(results, tone) {
         <td class="number">${formatNumber(result.households)}</td>
         <td class="number">${formatNumber(validation.collectedHouseholds)}</td>
         <td class="number">${formatPercent(validation.coverageRate)}</td>
+        <td>${escapeHtml(strategyLabel(result.collectionStrategy))}</td>
         <td>${escapeHtml(formatSupplyGroups(result.supplyGroups))}</td>
       </tr>`;
     })
     .join("");
   return `<div class="table-wrap"><table>
-    <thead><tr><th>상태</th><th>단지</th><th>K-apt 코드</th><th>준공일</th><th>전체 세대</th><th>수집 세대</th><th>수집률</th><th>공급면적 그룹</th></tr></thead>
+    <thead><tr><th>상태</th><th>단지</th><th>K-apt 코드</th><th>준공일</th><th>전체 세대</th><th>수집 세대</th><th>수집률</th><th>수집 방식</th><th>공급면적 그룹</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
@@ -336,6 +337,7 @@ function renderCsv(view) {
       "K-apt세대수",
       "수집세대수",
       "수집률",
+      "수집방식",
       "공급면적그룹",
       "실패분류",
       "상세사유",
@@ -355,6 +357,7 @@ function renderCsv(view) {
         result.households,
         result.validation?.collectedHouseholds,
         formatPercent(result.validation?.coverageRate),
+        strategyLabel(result.collectionStrategy),
         formatSupplyGroups(result.supplyGroups),
         "",
         "",
@@ -371,6 +374,7 @@ function renderCsv(view) {
       result.households,
       result.validation?.collectedHouseholds,
       formatPercent(result.validation?.coverageRate),
+      strategyLabel(result.collectionStrategy),
       "",
       reasonLabel(result.failureReason || result.errorDetails?.resultCode || result.status),
       result.error,
@@ -387,12 +391,23 @@ function renderCsv(view) {
       "",
       "",
       "",
+      "",
       result.reasonLabels.join(", "),
       result.buildingPurpose,
     ]);
   }
 
   return `\uFEFF${rows.map((row) => row.map(csvValue).join(",")).join("\r\n")}\r\n`;
+}
+
+function strategyLabel(value) {
+  const labels = {
+    "permit-type-weighted": "인허가 타입별 세대수 가중",
+    "housing-permit": "주택인허가",
+    "building-permit": "건축인허가",
+    "building-ledger": "건축물대장",
+  };
+  return labels[value] || String(value || "-");
 }
 
 function coverage(result) {

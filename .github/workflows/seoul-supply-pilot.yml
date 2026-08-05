@@ -8,6 +8,7 @@ on:
       - ".github/workflows/seoul-supply-pilot.yml"
       - "functions/api/supply-profile.js"
       - "functions/_shared/supply-area.js"
+      - "functions/_shared/permit-supply.js"
       - "functions/_shared/building-match.js"
       - "functions/_shared/molit.js"
       - "migrations/**"

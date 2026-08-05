@@ -1,5 +1,5 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v6-apartment-unit-filter";
+  "supply-model-v7-permit-type-weighted";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 
 export const STANDARD_AREA_GROUPS = [
@@ -159,7 +159,41 @@ export function buildSupplyProfile({
   calculatedAt = new Date().toISOString(),
 }) {
   const state = normalizeCollectionState(collectionState);
-  const patterns = state.patterns
+  return buildSupplyProfileFromPatterns({
+    complexKey,
+    source,
+    patterns: state.patterns,
+    expectedHouseholds,
+    calculatedAt,
+    processedRows: state.processedRows,
+    sourceRows: state.sourceRows,
+    filteredRows: state.filteredRows,
+    processedUnits: state.processedUnits,
+    skippedUnits: state.skippedUnits,
+  });
+}
+
+export function buildSupplyProfileFromPatterns({
+  complexKey,
+  source,
+  patterns: inputPatterns,
+  expectedHouseholds = null,
+  calculatedAt = new Date().toISOString(),
+  processedRows = 0,
+  sourceRows = 0,
+  filteredRows = 0,
+  processedUnits = 0,
+  skippedUnits = 0,
+  provenance = null,
+}) {
+  const patterns = (Array.isArray(inputPatterns) ? inputPatterns : [])
+    .map((pattern) => ({
+      ...pattern,
+      exclusiveArea: Number(pattern?.exclusiveArea) || 0,
+      residentialCommonArea: Number(pattern?.residentialCommonArea) || 0,
+      supplyArea: Number(pattern?.supplyArea) || 0,
+      unitCount: Math.max(0, Math.round(Number(pattern?.unitCount) || 0)),
+    }))
     .filter((pattern) => pattern.unitCount > 0 && pattern.exclusiveArea > 0 && pattern.supplyArea > pattern.exclusiveArea)
     .sort((a, b) => a.exclusiveArea - b.exclusiveArea || a.supplyArea - b.supplyArea);
   const assignments = assignPatternsToGroups(patterns);
@@ -175,17 +209,18 @@ export function buildSupplyProfile({
     source,
     unitCount: patterns.reduce((sum, pattern) => sum + pattern.unitCount, 0),
     patternCount: patterns.length,
-    processedRows: state.processedRows,
-    sourceRows: state.sourceRows,
-    filteredRows: state.filteredRows,
-    skippedUnits: state.skippedUnits,
+    processedRows: Number(processedRows) || 0,
+    sourceRows: Number(sourceRows) || Number(processedRows) || 0,
+    filteredRows: Number(filteredRows) || 0,
+    skippedUnits: Number(skippedUnits) || 0,
     groups,
   };
+  if (provenance) profile.provenance = provenance;
   profile.householdValidation = buildHouseholdValidation({
     expectedHouseholds,
     profileUnitCount: profile.unitCount,
-    processedUnits: state.processedUnits,
-    skippedUnits: state.skippedUnits,
+    processedUnits,
+    skippedUnits,
   });
   return profile;
 }

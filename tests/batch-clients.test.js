@@ -354,6 +354,41 @@ test("연대별 카탈로그 교체는 해당 범위에서 빠진 공급면적 �
   assert.deepEqual(JSON.parse(cacheDelete.params[0]), ["aptlist-old"]);
 });
 
+test("permit API rows are collected through the final page", async () => {
+  const requests = [];
+  const client = createMolitBatchClient({
+    serviceKey: "decoding-key",
+    onRequest: (request) => requests.push(request),
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      const pageNo = Number(parsed.searchParams.get("pageNo"));
+      return apiResponse({
+        items: { item: [{ rnum: pageNo, typeGb: `84-${pageNo}` }] },
+        pageNo,
+        numOfRows: 1,
+        totalCount: 2,
+      });
+    },
+  });
+
+  const result = await client.fetchPermitRows(
+    "housing-permit",
+    "getHpMgmCoopTpOulnInfo",
+    {
+      sigunguCd: "11740",
+      bjdongCd: "10300",
+      platGbCd: "0",
+      bun: "0187",
+      ji: "0000",
+    }
+  );
+
+  assert.equal(result.totalCount, 2);
+  assert.equal(result.pageCount, 2);
+  assert.deepEqual(result.items.map((item) => item.rnum), [1, 2]);
+  assert.deepEqual(requests.map((request) => request.pageNo), [1, 2]);
+});
+
 function apiResponse(body) {
   return new Response(
     JSON.stringify({

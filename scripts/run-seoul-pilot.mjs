@@ -11,6 +11,7 @@ import {
   shouldResetRecord,
 } from "../functions/api/supply-profile.js";
 import { resolveBuildingLedgerSources } from "../functions/_shared/building-match.js";
+import { buildPermitSupplyProfile } from "../functions/_shared/permit-supply.js";
 import { SUPPLY_CALCULATION_VERSION } from "../functions/_shared/supply-area.js";
 import { createD1RestClient } from "./lib/d1-rest-client.mjs";
 import { createMolitBatchClient } from "./lib/molit-batch-client.mjs";
@@ -69,7 +70,7 @@ let stoppedReason = "";
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.07.31-01-rc.8",
+  version: "v2026.08.05-01-rc.1",
   runId,
   scope: {
     region: "서울특별시",
@@ -531,6 +532,40 @@ async function verifyApartmentSaleMatches(entries) {
 async function collectOneComplex(row, record) {
   let retries = 0;
   const label = `${row.complex_name} (${row.kapt_code})`;
+
+  if (!record.permitCollection?.completedAt) {
+    try {
+      const permitResult = await collectPermitProfile(record);
+      record.permitCollection = permitResult.diagnostics;
+      if (permitResult.profile) {
+        applyPermitProfile(record, permitResult.profile, permitResult.diagnostics);
+      }
+    } catch (error) {
+      const details = normalizeErrorDetails(error, 1);
+      record.permitCollection = {
+        status: "error",
+        completedAt: "",
+        attemptedAt: new Date().toISOString(),
+        error: error.message,
+        errorDetails: details,
+      };
+      record.errorDetails = details;
+      record.error = `Permit API: ${error.message}`;
+      pauseRecord(record);
+    }
+    record.leaseUntil = "";
+    record.updatedAt = new Date().toISOString();
+    await d1.putProfileRecord(record.complexKey, record);
+    await d1.updateCatalogProfile(record.complexKey, {
+      status: record.status,
+      calculationVersion:
+        record.status === "ready" ? SUPPLY_CALCULATION_VERSION : "",
+      lastError: record.error || "",
+    });
+    if (record.status === "ready" || record.status === "paused") {
+      return buildCollectionResult(row, record);
+    }
+  }
   console.log(`공급면적 수집 시작: ${label}`);
 
   while (hasBudget()) {
@@ -601,6 +636,117 @@ async function collectOneComplex(row, record) {
   return buildCollectionResult(row, record);
 }
 
+async function collectPermitProfile(record) {
+  const source = record.requestedSource || record.source;
+  const attemptedAt = new Date().toISOString();
+  const attempts = [];
+  const services = [
+    {
+      service: "housing-permit",
+      typeOperation: "getHpMgmCoopTpOulnInfo",
+      areaOperation: "getHpExposPubuseAreaInfo",
+    },
+    {
+      service: "building-permit",
+      typeOperation: "getApHsTpInfo",
+      areaOperation: "getApExposPubuseAreaInfo",
+    },
+  ];
+
+  for (const candidate of services) {
+    assertBudget(candidate.typeOperation);
+    const typeResult = await molit.fetchPermitRows(
+      candidate.service,
+      candidate.typeOperation,
+      source
+    );
+    const attempt = {
+      service: candidate.service,
+      typeOperation: candidate.typeOperation,
+      areaOperation: candidate.areaOperation,
+      typeRows: typeResult.items.length,
+      areaRows: 0,
+      pageCount: typeResult.pageCount,
+      status: typeResult.items.length ? "type-found" : "not-found",
+    };
+    attempts.push(attempt);
+    if (!typeResult.items.length) continue;
+
+    assertBudget(candidate.areaOperation);
+    const areaResult = await molit.fetchPermitRows(
+      candidate.service,
+      candidate.areaOperation,
+      source
+    );
+    attempt.areaRows = areaResult.items.length;
+    attempt.pageCount += areaResult.pageCount;
+    const profile = buildPermitSupplyProfile({
+      complexKey: record.complexKey,
+      source,
+      service: candidate.service,
+      typeRows: typeResult.items,
+      areaRows: areaResult.items,
+      expectedHouseholds: record.expectedHouseholds,
+    });
+    attempt.matchedTypeRows = Number(profile.provenance?.matchedTypeRows) || 0;
+    attempt.matchedHouseholds = Number(profile.unitCount) || 0;
+    attempt.validation = profile.householdValidation;
+    const isComplete =
+      profile.groups.length > 0 &&
+      (profile.householdValidation.status === "matched" ||
+        profile.householdValidation.status === "unavailable");
+    attempt.status = isComplete ? "ready" : "validation-failed";
+    if (isComplete) {
+      return {
+        profile,
+        diagnostics: {
+          status: "ready",
+          strategy: candidate.service,
+          source,
+          attempts,
+          attemptedAt,
+          completedAt: new Date().toISOString(),
+        },
+      };
+    }
+  }
+
+  return {
+    profile: null,
+    diagnostics: {
+      status: "ledger-fallback",
+      strategy: "building-ledger",
+      source,
+      attempts,
+      attemptedAt,
+      completedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function applyPermitProfile(record, profile, diagnostics) {
+  const totalRows = diagnostics.attempts.reduce(
+    (sum, attempt) => sum + attempt.typeRows + attempt.areaRows,
+    0
+  );
+  const totalPages = diagnostics.attempts.reduce(
+    (sum, attempt) => sum + attempt.pageCount,
+    0
+  );
+  record.profile = profile;
+  record.status = "ready";
+  record.calculationVersion = SUPPLY_CALCULATION_VERSION;
+  record.totalRows = totalRows;
+  record.totalPages = totalPages;
+  record.lastSuccessfulPage = totalPages;
+  record.nextPage = totalPages + 1;
+  record.error = "";
+  record.errorDetails = null;
+  record.failedPage = null;
+  record.nextRetryAt = "";
+  record.fetchedAt = new Date().toISOString();
+}
+
 function buildCollectionResult(row, record, { reusedReady = false } = {}) {
   return {
     complexKey: record.complexKey,
@@ -616,6 +762,11 @@ function buildCollectionResult(row, record, { reusedReady = false } = {}) {
     errorDetails: record.errorDetails || null,
     failureReason: getFailureReason(record),
     reusedReady,
+    collectionStrategy:
+      record.profile?.provenance?.strategy ||
+      record.permitCollection?.strategy ||
+      "building-ledger",
+    permitCollection: record.permitCollection || null,
     resolution: record.resolution || null,
     validation: record.profile?.householdValidation || null,
     supplyGroups: (record.profile?.groups || []).map((group) => ({

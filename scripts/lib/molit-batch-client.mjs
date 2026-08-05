@@ -10,6 +10,10 @@ const APT_LIST_BY_SIDO_ENDPOINT =
   "https://apis.data.go.kr/1613000/AptListService3/getSidoAptList3";
 const APT_BASIS_ENDPOINT =
   "https://apis.data.go.kr/1613000/AptBasisInfoServiceV4/getAphusBassInfoV4";
+const PERMIT_ENDPOINTS = {
+  "building-permit": "https://apis.data.go.kr/1613000/ArchPmsHubService",
+  "housing-permit": "https://apis.data.go.kr/1613000/HsPmsHubService",
+};
 const RETRY_DELAYS = [1_000, 3_000, 10_000];
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -106,6 +110,52 @@ export function createMolitBatchClient({
         returnedPageSize: Math.max(0, Number(body.numOfRows || pageSize)),
       };
     },
+
+    async fetchPermitRows(service, operation, source, pageSize = 1000) {
+      const endpoint = PERMIT_ENDPOINTS[service];
+      if (!endpoint) throw new Error(`Unknown permit service: ${service}`);
+      const items = [];
+      let pageNo = 1;
+      let totalCount = Number.POSITIVE_INFINITY;
+      let returnedPageSize = pageSize;
+
+      while (items.length < totalCount) {
+        const url = new URL(`${endpoint}/${operation}`);
+        url.searchParams.set("serviceKey", serviceKey);
+        Object.entries(source || {}).forEach(([key, value]) => {
+          if (value !== null && value !== undefined && String(value).trim()) {
+            url.searchParams.set(key, String(value));
+          }
+        });
+        url.searchParams.set("_type", "json");
+        url.searchParams.set("pageNo", String(pageNo));
+        url.searchParams.set("numOfRows", String(pageSize));
+        const payload = await fetchJsonWithRetry(url, {
+          fetchImpl,
+          onRequest,
+          timeoutMs,
+          operation,
+          requestContext: { service, pageNo, pageSize },
+        });
+        const body = assertApiSuccess(payload, `${service} ${operation}`);
+        const pageItems = normalizeItems(body.items || body.item);
+        items.push(...pageItems);
+        totalCount = Math.max(0, Number(body.totalCount || items.length));
+        returnedPageSize = Math.max(
+          1,
+          Number(body.numOfRows || pageItems.length || pageSize)
+        );
+        if (!pageItems.length || items.length >= totalCount) break;
+        pageNo += 1;
+      }
+
+      return {
+        items,
+        totalCount: Number.isFinite(totalCount) ? totalCount : items.length,
+        pageCount: pageNo,
+        returnedPageSize,
+      };
+    },
   };
 
   async function fetchAptList({
@@ -152,12 +202,12 @@ export function createMolitBatchClient({
 
 async function fetchJsonWithRetry(
   url,
-  { fetchImpl, onRequest, timeoutMs, operation }
+  { fetchImpl, onRequest, timeoutMs, operation, requestContext = {} }
 ) {
   let lastError;
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
     if (attempt > 0) await sleep(RETRY_DELAYS[attempt - 1]);
-    onRequest({ operation, attempt: attempt + 1 });
+    onRequest({ ...requestContext, operation, attempt: attempt + 1 });
     try {
       const response = await fetchImpl(url.toString(), {
         headers: { accept: "application/json, text/plain, */*" },
