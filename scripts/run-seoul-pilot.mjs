@@ -98,7 +98,7 @@ const verifiedResolutionByComplexKey = new Map();
 const permitBasisCatalogByDong = new Map();
 
 const report = {
-  version: "v2026.08.06-01-rc.6",
+  version: "v2026.08.06-01-rc.7",
   runId,
   scope: {
     region: "서울특별시",
@@ -1128,6 +1128,7 @@ async function discoverPermitSources(record) {
         service: catalog.service,
       }))
     );
+    if (resolved.sources.length) break;
   }
 
   return {
@@ -1141,10 +1142,9 @@ async function discoverPermitSources(record) {
 function permitCatalogDateWindow(approvalDate) {
   const year = Number(String(approvalDate || "").slice(0, 4));
   if (!Number.isInteger(year) || year < 1900 || year > 2100) return {};
-  const decade = Math.floor(year / 10) * 10;
   return {
-    startDate: `${Math.max(1900, decade - 5)}0101`,
-    endDate: `${Math.min(2100, decade + 14)}1231`,
+    startDate: `${Math.max(1900, year - 8)}0101`,
+    endDate: `${Math.min(2100, year + 2)}1231`,
   };
 }
 
