@@ -12,7 +12,10 @@ import {
 } from "../functions/api/supply-profile.js";
 import { resolveBuildingLedgerSources } from "../functions/_shared/building-match.js";
 import { resolvePermitSourcesFromBasisRows } from "../functions/_shared/permit-match.js";
-import { buildPermitSupplyProfile } from "../functions/_shared/permit-supply.js";
+import {
+  buildPermitSupplyProfile,
+  classifyPermitProfileFailure,
+} from "../functions/_shared/permit-supply.js";
 import { SUPPLY_CALCULATION_VERSION } from "../functions/_shared/supply-area.js";
 import { createD1RestClient } from "./lib/d1-rest-client.mjs";
 import { createMolitBatchClient } from "./lib/molit-batch-client.mjs";
@@ -95,7 +98,7 @@ const verifiedResolutionByComplexKey = new Map();
 const permitBasisCatalogByDong = new Map();
 
 const report = {
-  version: "v2026.08.06-01-rc.5",
+  version: "v2026.08.06-01-rc.6",
   runId,
   scope: {
     region: "서울특별시",
@@ -1198,15 +1201,8 @@ function applyPermitProfile(record, profile, diagnostics) {
 
 function markPermitUnavailable(record, diagnostics) {
   const attempts = diagnostics.attempts || [];
-  const hasRows = attempts.some(
-    (attempt) => attempt.typeRows > 0 || attempt.areaRows > 0
-  );
-  const resultCode = hasRows
-    ? "PERMIT_PROFILE_VALIDATION_FAILED"
-    : "PERMIT_PROFILE_NOT_FOUND";
-  const resultMessage = hasRows
-    ? "Permit rows were found, but apartment type areas or household totals did not match."
-    : "No apartment type rows were found in the approved permit services.";
+  const { resultCode, resultMessage, retryable } =
+    classifyPermitProfileFailure(attempts);
   record.status = "failed";
   record.errorDetails = {
     operation: "permit-profile",
@@ -1214,7 +1210,7 @@ function markPermitUnavailable(record, diagnostics) {
     upstreamStatus: null,
     resultCode,
     resultMessage,
-    retryable: true,
+    retryable,
   };
   record.error = resultMessage;
   record.failedPage = 1;

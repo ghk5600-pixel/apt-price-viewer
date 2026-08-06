@@ -71,11 +71,13 @@ export function scorePermitBasisRow(row, metadata = {}, requestedSource = {}) {
   const purpose = `${row?.mainPurpsCdNm || ""} ${row?.etcPurps || ""}`.trim();
   const normalizedPurpose = normalizeText(purpose);
   const nameSimilarity = textSimilarity(rowName, targetName);
+  const canUseNameEvidence =
+    isInformativeName(rowName) && isInformativeName(targetName);
   const sameRequestedLot = sameSource(source, requestedSource);
   const reasons = [];
   let score = 0;
 
-  if (targetName && rowName) {
+  if (canUseNameEvidence) {
     if (rowName === targetName) {
       score += 0.62;
       reasons.push("단지명 일치");
@@ -129,7 +131,7 @@ export function scorePermitBasisRow(row, metadata = {}, requestedSource = {}) {
   }
 
   const strongName =
-    rowName && targetName &&
+    canUseNameEvidence &&
     (rowName.includes(targetName) || targetName.includes(rowName) || nameSimilarity >= 0.72);
   const strongFacts =
     householdRate !== null &&
@@ -155,6 +157,11 @@ export function scorePermitBasisRow(row, metadata = {}, requestedSource = {}) {
     approvalDate,
     purpose,
   };
+}
+
+function isInformativeName(value) {
+  const text = String(value || "");
+  return text.length >= 3 && !/^\d+$/.test(text);
 }
 
 function sourceFromPermitRow(row = {}) {

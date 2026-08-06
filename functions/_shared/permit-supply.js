@@ -87,6 +87,79 @@ export function buildPermitSupplyProfile({
   });
 }
 
+export function classifyPermitProfileFailure(attempts = []) {
+  const rows = Array.isArray(attempts) ? attempts : [];
+  const hasRows = rows.some(
+    (attempt) => Number(attempt?.typeRows) > 0 || Number(attempt?.areaRows) > 0
+  );
+  if (!hasRows) {
+    return {
+      resultCode: "PERMIT_PROFILE_NOT_FOUND",
+      resultMessage:
+        "No apartment type rows were found in the approved permit services.",
+      retryable: true,
+    };
+  }
+
+  const validations = rows
+    .map((attempt) => attempt?.validation)
+    .filter(Boolean);
+  const projectScope = validations.find((validation) => {
+    const expected = Number(validation.expectedHouseholds) || 0;
+    const collected = Number(validation.collectedHouseholds) || 0;
+    const tolerance = Number(validation.toleranceHouseholds) || 0;
+    return expected > 0 && collected > expected + tolerance;
+  });
+  if (projectScope) {
+    return {
+      resultCode: "PERMIT_PROJECT_SCOPE_MISMATCH",
+      resultMessage:
+        `Permit project contains ${projectScope.collectedHouseholds} households, ` +
+        `but the K-apt complex contains ${projectScope.expectedHouseholds}. ` +
+        "A project-to-complex building split is required.",
+      retryable: false,
+    };
+  }
+
+  const mappingFailed = rows.some(
+    (attempt) =>
+      Number(attempt?.typeRows) > 0 &&
+      Number(attempt?.areaRows) > 0 &&
+      Number(attempt?.matchedTypeRows) === 0
+  );
+  if (mappingFailed) {
+    return {
+      resultCode: "PERMIT_AREA_MAPPING_FAILED",
+      resultMessage:
+        "Permit type and area rows were found, but their exclusive-area keys could not be matched.",
+      retryable: false,
+    };
+  }
+
+  const coverage = validations.find((validation) => {
+    const expected = Number(validation.expectedHouseholds) || 0;
+    const collected = Number(validation.collectedHouseholds) || 0;
+    return expected > 0 && collected > 0 && collected < expected;
+  });
+  if (coverage) {
+    return {
+      resultCode: "PERMIT_HOUSEHOLD_COVERAGE_MISMATCH",
+      resultMessage:
+        `Permit profile matched ${coverage.collectedHouseholds} of ` +
+        `${coverage.expectedHouseholds} K-apt households. ` +
+        "Additional building or lot records are required.",
+      retryable: true,
+    };
+  }
+
+  return {
+    resultCode: "PERMIT_PROFILE_VALIDATION_FAILED",
+    resultMessage:
+      "Permit rows were found, but apartment type areas or household totals did not match.",
+    retryable: true,
+  };
+}
+
 export function isPermitResidentialCommonRow(row) {
   if (String(row?.exposPubuseGbCd || "") !== COMMON_CODE) return false;
   const isMainApartmentCommon =

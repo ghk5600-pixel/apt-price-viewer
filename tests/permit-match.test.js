@@ -74,6 +74,20 @@ test("아파트와 오피스텔이 함께 적힌 주상복합 사업은 후보�
   assert.equal(result.sources[0].bun, "1582");
 });
 
+test("숫자 하나뿐인 건물명은 단지명 일치 근거로 사용하지 않는다", () => {
+  const result = resolvePermitSourcesFromBasisRows({
+    requestedSource: source("0067"),
+    metadata: {
+      complexName: "송파레이크파크호반써밋1차",
+      expectedHouseholds: 689,
+      approvalDate: "20220128",
+    },
+    rows: [row("0700", "1", 50, "20220128", "공동주택 아파트")],
+  });
+
+  assert.deepEqual(result.sources, []);
+});
+
 function source(bun) {
   return {
     sigunguCd: "11710",
