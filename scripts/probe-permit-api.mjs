@@ -4,15 +4,30 @@ import { parseJsonPreservingLongIntegers } from "../functions/_shared/molit.js";
 const SERVICE_KEY = process.env.MOLIT_SERVICE_KEY || "";
 const REPORT_PATH = process.env.PERMIT_PROBE_REPORT_PATH || "permit-probe-report.json";
 const RETRY_DELAYS = [0, 5_000, 15_000, 30_000];
+const omitLot = process.env.PERMIT_PROBE_OMIT_LOT === "1";
 const source = {
   sigunguCd: process.env.PERMIT_PROBE_SIGUNGU_CD || "11740",
   bjdongCd: process.env.PERMIT_PROBE_BJDONG_CD || "10300",
-  platGbCd: process.env.PERMIT_PROBE_PLAT_GB_CD || "0",
-  bun: process.env.PERMIT_PROBE_BUN || "0514",
-  ji: process.env.PERMIT_PROBE_JI || "0000",
 };
+if (!omitLot) {
+  source.platGbCd = process.env.PERMIT_PROBE_PLAT_GB_CD || "0";
+  source.bun = process.env.PERMIT_PROBE_BUN || "0514";
+  source.ji = process.env.PERMIT_PROBE_JI || "0000";
+}
 
 const endpoints = [
+  {
+    service: "building-permit",
+    operation: "getApBasisOulnInfo",
+    baseUrl: "https://apis.data.go.kr/1613000/ArchPmsHubService",
+    discovery: true,
+  },
+  {
+    service: "housing-permit",
+    operation: "getHpBasisOulnInfo",
+    baseUrl: "https://apis.data.go.kr/1613000/HsPmsHubService",
+    discovery: true,
+  },
   {
     service: "building-permit",
     operation: "getApHsTpInfo",
@@ -33,7 +48,7 @@ const endpoints = [
     operation: "getHpExposPubuseAreaInfo",
     baseUrl: "https://apis.data.go.kr/1613000/HsPmsHubService",
   },
-];
+].filter((endpoint) => !omitLot || endpoint.discovery);
 
 if (!SERVICE_KEY) throw new Error("MOLIT_SERVICE_KEY is required.");
 
@@ -53,6 +68,7 @@ const report = {
   startedAt,
   finishedAt: new Date().toISOString(),
   source,
+  omitLot,
   results,
 };
 await writeFile(REPORT_PATH, `${JSON.stringify(report, null, 2)}\n`, "utf8");

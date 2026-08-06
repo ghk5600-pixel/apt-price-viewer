@@ -29,6 +29,11 @@ on:
         required: true
         default: "0000"
         type: string
+      omit_lot:
+        description: "지번을 생략하고 법정동 전체 기본개요 조회"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -43,6 +48,7 @@ jobs:
       PERMIT_PROBE_BJDONG_CD: ${{ inputs.bjdong_cd || '10300' }}
       PERMIT_PROBE_BUN: ${{ inputs.bun || '0514' }}
       PERMIT_PROBE_JI: ${{ inputs.ji || '0000' }}
+      PERMIT_PROBE_OMIT_LOT: ${{ inputs.omit_lot && '1' || '0' }}
       PERMIT_PROBE_REPORT_PATH: permit-probe-report.json
 
     steps:
