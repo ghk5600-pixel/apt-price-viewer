@@ -15,6 +15,7 @@ import { resolvePermitSourcesFromBasisRows } from "../functions/_shared/permit-m
 import {
   buildPermitSupplyProfile,
   classifyPermitProfileFailure,
+  migrateCompatiblePermitProfileRecord,
 } from "../functions/_shared/permit-supply.js";
 import { SUPPLY_CALCULATION_VERSION } from "../functions/_shared/supply-area.js";
 import { createD1RestClient } from "./lib/d1-rest-client.mjs";
@@ -98,7 +99,7 @@ const verifiedResolutionByComplexKey = new Map();
 const permitBasisCatalogByDong = new Map();
 
 const report = {
-  version: "v2026.08.06-01-rc.7",
+  version: "v2026.08.06-01-rc.8",
   runId,
   scope: {
     region: "서울특별시",
@@ -502,7 +503,14 @@ async function collectProfiles() {
     const requestData = catalogRowToRequest(row);
     let record = await d1.getProfileRecord(requestData.complexKey);
     let recordChanged = false;
-    if (!record || shouldResetRecord(record, requestData)) {
+    if (
+      migrateCompatiblePermitProfileRecord(
+        record,
+        requestData.sourceSignature
+      )
+    ) {
+      recordChanged = true;
+    } else if (!record || shouldResetRecord(record, requestData)) {
       record = createRecord(requestData);
       recordChanged = true;
     } else {

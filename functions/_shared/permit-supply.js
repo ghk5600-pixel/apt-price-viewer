@@ -1,10 +1,16 @@
-import { buildSupplyProfileFromPatterns } from "./supply-area.js";
+import {
+  buildSupplyProfileFromPatterns,
+  SUPPLY_CALCULATION_VERSION,
+} from "./supply-area.js";
 
 const EXCLUSIVE_CODE = "1";
 const COMMON_CODE = "2";
 const APARTMENT_PURPOSE_CODE = "02001";
 const APARTMENT_HOUSING_TYPE_CODE = "3";
 const MATCH_TOLERANCE = 0.02;
+const COMPATIBLE_PERMIT_CALCULATION_VERSIONS = new Set([
+  "supply-model-v7-permit-type-weighted",
+]);
 
 export function buildPermitSupplyProfile({
   complexKey,
@@ -158,6 +164,26 @@ export function classifyPermitProfileFailure(attempts = []) {
       "Permit rows were found, but apartment type areas or household totals did not match.",
     retryable: true,
   };
+}
+
+export function migrateCompatiblePermitProfileRecord(
+  record,
+  sourceSignature
+) {
+  if (
+    !record ||
+    record.status !== "ready" ||
+    !COMPATIBLE_PERMIT_CALCULATION_VERSIONS.has(record.calculationVersion) ||
+    record.sourceSignature !== sourceSignature
+  ) {
+    return false;
+  }
+  record.calculationVersion = SUPPLY_CALCULATION_VERSION;
+  if (record.profile && typeof record.profile === "object") {
+    record.profile.calculationVersion = SUPPLY_CALCULATION_VERSION;
+  }
+  record.updatedAt = new Date().toISOString();
+  return true;
 }
 
 export function isPermitResidentialCommonRow(row) {

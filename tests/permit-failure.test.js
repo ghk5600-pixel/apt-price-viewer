@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyPermitProfileFailure } from "../functions/_shared/permit-supply.js";
+import {
+  classifyPermitProfileFailure,
+  migrateCompatiblePermitProfileRecord,
+} from "../functions/_shared/permit-supply.js";
 
 test("인허가 사업 세대수가 K-apt 단지보다 크면 사업 범위 불일치로 분류한다", () => {
   const failure = classifyPermitProfileFailure([
@@ -51,4 +54,45 @@ test("인허가 타입 행이 없으면 자료 미발견으로 분류한다", ()
   ]);
 
   assert.equal(failure.resultCode, "PERMIT_PROFILE_NOT_FOUND");
+});
+
+test("산식이 같은 기존 인허가 성공 프로필은 재호출 없이 새 버전으로 이관한다", () => {
+  const record = {
+    status: "ready",
+    calculationVersion: "supply-model-v7-permit-type-weighted",
+    sourceSignature: "same-source",
+    profile: {
+      calculationVersion: "supply-model-v7-permit-type-weighted",
+      groups: [{ label: "84타입" }],
+    },
+  };
+
+  const migrated = migrateCompatiblePermitProfileRecord(
+    record,
+    "same-source"
+  );
+
+  assert.equal(migrated, true);
+  assert.equal(
+    record.calculationVersion,
+    "supply-model-v11-permit-discovery-first"
+  );
+  assert.equal(
+    record.profile.calculationVersion,
+    "supply-model-v11-permit-discovery-first"
+  );
+});
+
+test("지번 서명이 달라진 성공 프로필은 자동 이관하지 않는다", () => {
+  const record = {
+    status: "ready",
+    calculationVersion: "supply-model-v7-permit-type-weighted",
+    sourceSignature: "old-source",
+    profile: {},
+  };
+
+  assert.equal(
+    migrateCompatiblePermitProfileRecord(record, "new-source"),
+    false
+  );
 });
