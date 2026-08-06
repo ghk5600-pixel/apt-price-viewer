@@ -93,7 +93,7 @@ let consecutiveTransportFailures = 0;
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.08.06-01-rc.1",
+  version: "v2026.08.06-01-rc.2",
   runId,
   scope: {
     region: "서울특별시",

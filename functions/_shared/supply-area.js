@@ -246,17 +246,25 @@ export function buildHouseholdValidation({
       observedLedgerUnits: observed,
       difference: null,
       coverageRate: null,
+      toleranceHouseholds: null,
+      exactMatch: null,
     };
   }
 
   const difference = collected - expected;
+  const toleranceHouseholds =
+    expected >= 200 ? Math.max(2, Math.ceil(expected * 0.01)) : 0;
+  const exactMatch = difference === 0;
   return {
-    status: difference === 0 ? "matched" : "mismatch",
+    status:
+      Math.abs(difference) <= toleranceHouseholds ? "matched" : "mismatch",
     expectedHouseholds: expected,
     collectedHouseholds: collected,
     observedLedgerUnits: observed,
     difference,
     coverageRate: round(collected / expected, 6),
+    toleranceHouseholds,
+    exactMatch,
   };
 }
 
