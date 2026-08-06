@@ -93,7 +93,7 @@ let consecutiveTransportFailures = 0;
 const verifiedResolutionByComplexKey = new Map();
 
 const report = {
-  version: "v2026.08.06-01-rc.2",
+  version: "v2026.08.06-01-rc.3",
   runId,
   scope: {
     region: "서울특별시",
@@ -716,7 +716,20 @@ async function collectOneComplex(row, record) {
       } else if (!config.enableLedgerFallback) {
         markPermitUnavailable(record, permitResult.diagnostics);
       } else {
-        prepareLedgerFallback(record, permitResult.diagnostics);
+        const resolvedPermitResult = await collectPermitProfileFromResolvedLots(
+          record,
+          permitResult.diagnostics
+        );
+        record.permitCollection = resolvedPermitResult.diagnostics;
+        if (resolvedPermitResult.profile) {
+          applyPermitProfile(
+            record,
+            resolvedPermitResult.profile,
+            resolvedPermitResult.diagnostics
+          );
+        } else {
+          prepareLedgerFallback(record, resolvedPermitResult.diagnostics);
+        }
       }
     } catch (error) {
       const permitFailureCount =
@@ -832,7 +845,7 @@ async function collectOneComplex(row, record) {
 }
 
 function shouldRestartPermitOnlyRecord(record) {
-  if (config.enableLedgerFallback || record.profile) return false;
+  if (config.enableLedgerFallback) return false;
   return (
     record.status === "paused" ||
     record.status === "upstream-pending" ||
@@ -841,10 +854,13 @@ function shouldRestartPermitOnlyRecord(record) {
   );
 }
 
-async function collectPermitProfile(record) {
-  const source = record.requestedSource || record.source;
-  const attemptedAt = new Date().toISOString();
-  const attempts = [];
+async function collectPermitProfile(record, options = {}) {
+  const requestedSource = record.requestedSource || record.source;
+  const sources = uniquePermitSources(
+    options.sources?.length ? options.sources : [requestedSource]
+  );
+  const attemptedAt = options.attemptedAt || new Date().toISOString();
+  const attempts = [...(options.previousAttempts || [])];
   const services = [
     {
       service: "housing-permit",
@@ -858,61 +874,66 @@ async function collectPermitProfile(record) {
     },
   ];
 
-  for (const candidate of services) {
-    assertBudget(candidate.typeOperation);
-    const typeResult = await molit.fetchPermitRows(
-      candidate.service,
-      candidate.typeOperation,
-      source
-    );
-    const attempt = {
-      service: candidate.service,
-      typeOperation: candidate.typeOperation,
-      areaOperation: candidate.areaOperation,
-      typeRows: typeResult.items.length,
-      areaRows: 0,
-      pageCount: typeResult.pageCount,
-      status: typeResult.items.length ? "type-found" : "not-found",
-    };
-    attempts.push(attempt);
-    if (!typeResult.items.length) continue;
-
-    assertBudget(candidate.areaOperation);
-    const areaResult = await molit.fetchPermitRows(
-      candidate.service,
-      candidate.areaOperation,
-      source
-    );
-    attempt.areaRows = areaResult.items.length;
-    attempt.pageCount += areaResult.pageCount;
-    const profile = buildPermitSupplyProfile({
-      complexKey: record.complexKey,
-      source,
-      service: candidate.service,
-      typeRows: typeResult.items,
-      areaRows: areaResult.items,
-      expectedHouseholds: record.expectedHouseholds,
-    });
-    attempt.matchedTypeRows = Number(profile.provenance?.matchedTypeRows) || 0;
-    attempt.matchedHouseholds = Number(profile.unitCount) || 0;
-    attempt.validation = profile.householdValidation;
-    const isComplete =
-      profile.groups.length > 0 &&
-      (profile.householdValidation.status === "matched" ||
-        profile.householdValidation.status === "unavailable");
-    attempt.status = isComplete ? "ready" : "validation-failed";
-    if (isComplete) {
-      return {
-        profile,
-        diagnostics: {
-          status: "ready",
-          strategy: candidate.service,
-          source,
-          attempts,
-          attemptedAt,
-          completedAt: new Date().toISOString(),
-        },
+  for (const source of sources) {
+    for (const candidate of services) {
+      assertBudget(candidate.typeOperation);
+      const typeResult = await molit.fetchPermitRows(
+        candidate.service,
+        candidate.typeOperation,
+        source
+      );
+      const attempt = {
+        service: candidate.service,
+        source,
+        typeOperation: candidate.typeOperation,
+        areaOperation: candidate.areaOperation,
+        typeRows: typeResult.items.length,
+        areaRows: 0,
+        pageCount: typeResult.pageCount,
+        status: typeResult.items.length ? "type-found" : "not-found",
       };
+      attempts.push(attempt);
+      if (!typeResult.items.length) continue;
+
+      assertBudget(candidate.areaOperation);
+      const areaResult = await molit.fetchPermitRows(
+        candidate.service,
+        candidate.areaOperation,
+        source
+      );
+      attempt.areaRows = areaResult.items.length;
+      attempt.pageCount += areaResult.pageCount;
+      const profile = buildPermitSupplyProfile({
+        complexKey: record.complexKey,
+        source,
+        service: candidate.service,
+        typeRows: typeResult.items,
+        areaRows: areaResult.items,
+        expectedHouseholds: record.expectedHouseholds,
+      });
+      attempt.matchedTypeRows = Number(profile.provenance?.matchedTypeRows) || 0;
+      attempt.matchedHouseholds = Number(profile.unitCount) || 0;
+      attempt.validation = profile.householdValidation;
+      const isComplete =
+        profile.groups.length > 0 &&
+        (profile.householdValidation.status === "matched" ||
+          profile.householdValidation.status === "unavailable");
+      attempt.status = isComplete ? "ready" : "validation-failed";
+      if (isComplete) {
+        return {
+          profile,
+          diagnostics: {
+            status: "ready",
+            strategy: candidate.service,
+            source,
+            requestedSource,
+            resolvedSources: sources,
+            attempts,
+            attemptedAt,
+            completedAt: new Date().toISOString(),
+          },
+        };
+      }
     }
   }
 
@@ -921,12 +942,98 @@ async function collectPermitProfile(record) {
     diagnostics: {
       status: "ledger-fallback",
       strategy: "building-ledger",
-      source,
+      source: requestedSource,
+      requestedSource,
+      resolvedSources: sources,
       attempts,
       attemptedAt,
       completedAt: new Date().toISOString(),
     },
   };
+}
+
+async function collectPermitProfileFromResolvedLots(record, initialDiagnostics) {
+  let resolution = record.resolution;
+  if (
+    resolution?.status !== "matched" ||
+    !Array.isArray(resolution.sources) ||
+    !resolution.sources.length
+  ) {
+    resolution = await resolveBuildingLedgerSources({
+      requestedSource: record.requestedSource || record.source,
+      metadata: {
+        ...(record.metadata || {}),
+        expectedHouseholds: record.expectedHouseholds,
+      },
+      fetchPage: (operation, source, pageNo, pageSize) =>
+        molit.fetchBuildingHubPage(operation, source, pageNo, pageSize),
+    });
+    record.resolution = resolution;
+  }
+
+  if (resolution.status !== "matched" || !resolution.sources.length) {
+    return {
+      profile: null,
+      diagnostics: {
+        ...initialDiagnostics,
+        status: "ledger-fallback",
+        strategy: "building-ledger",
+        resolutionStatus: resolution.status,
+        resolutionReason: resolution.reason || "",
+      },
+    };
+  }
+
+  applyVerifiedResolution(record, resolution);
+  const requestedSource = record.requestedSource || record.source;
+  const alternateSources = uniquePermitSources(resolution.sources)
+    .filter((source) => !samePermitSource(source, requestedSource))
+    .slice(0, 8);
+  if (!alternateSources.length) {
+    return {
+      profile: null,
+      diagnostics: {
+        ...initialDiagnostics,
+        status: "ledger-fallback",
+        strategy: "building-ledger",
+        resolvedSources: resolution.sources,
+      },
+    };
+  }
+
+  return collectPermitProfile(record, {
+    sources: alternateSources,
+    previousAttempts: initialDiagnostics.attempts,
+    attemptedAt: initialDiagnostics.attemptedAt,
+  });
+}
+
+function uniquePermitSources(sources) {
+  const unique = new Map();
+  for (const source of sources || []) {
+    const rawBun = String(source?.bun || "").trim();
+    const rawJi = String(source?.ji || "0").trim() || "0";
+    const normalized = {
+      sigunguCd: String(source?.sigunguCd || "").trim(),
+      bjdongCd: String(source?.bjdongCd || "").trim(),
+      platGbCd: String(source?.platGbCd ?? "0").trim() || "0",
+      bun: rawBun.padStart(4, "0"),
+      ji: rawJi.padStart(4, "0"),
+    };
+    if (!normalized.sigunguCd || !normalized.bjdongCd || !rawBun) continue;
+    unique.set(JSON.stringify(normalized), normalized);
+  }
+  return [...unique.values()];
+}
+
+function samePermitSource(left, right) {
+  const [normalizedLeft] = uniquePermitSources([left]);
+  const [normalizedRight] = uniquePermitSources([right]);
+  return Boolean(
+    normalizedLeft &&
+      normalizedRight &&
+      JSON.stringify(normalizedLeft) === JSON.stringify(normalizedRight)
+  );
 }
 
 function applyPermitProfile(record, profile, diagnostics) {
