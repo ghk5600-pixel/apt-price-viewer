@@ -11,6 +11,7 @@ import {
   shouldResetRecord,
 } from "../functions/api/supply-profile.js";
 import { resolveBuildingLedgerSources } from "../functions/_shared/building-match.js";
+import { resolvePermitSourcesFromBasisRows } from "../functions/_shared/permit-match.js";
 import { buildPermitSupplyProfile } from "../functions/_shared/permit-supply.js";
 import { SUPPLY_CALCULATION_VERSION } from "../functions/_shared/supply-area.js";
 import { createD1RestClient } from "./lib/d1-rest-client.mjs";
@@ -91,9 +92,10 @@ let completedCount = 0;
 let stoppedReason = "";
 let consecutiveTransportFailures = 0;
 const verifiedResolutionByComplexKey = new Map();
+const permitBasisCatalogByDong = new Map();
 
 const report = {
-  version: "v2026.08.06-01-rc.3",
+  version: "v2026.08.06-01-rc.4",
   runId,
   scope: {
     region: "서울특별시",
@@ -953,6 +955,19 @@ async function collectPermitProfile(record, options = {}) {
 }
 
 async function collectPermitProfileFromResolvedLots(record, initialDiagnostics) {
+  const basisDiscovery = await discoverPermitSources(record);
+  let accumulatedDiagnostics = initialDiagnostics;
+  if (basisDiscovery.sources.length) {
+    const discoveredPermitResult = await collectPermitProfile(record, {
+      sources: basisDiscovery.sources,
+      previousAttempts: initialDiagnostics.attempts,
+      attemptedAt: initialDiagnostics.attemptedAt,
+    });
+    discoveredPermitResult.diagnostics.basisDiscovery = basisDiscovery.diagnostics;
+    if (discoveredPermitResult.profile) return discoveredPermitResult;
+    accumulatedDiagnostics = discoveredPermitResult.diagnostics;
+  }
+
   let resolution = record.resolution;
   if (
     resolution?.status !== "matched" ||
@@ -975,11 +990,12 @@ async function collectPermitProfileFromResolvedLots(record, initialDiagnostics) 
     return {
       profile: null,
       diagnostics: {
-        ...initialDiagnostics,
+        ...accumulatedDiagnostics,
         status: "ledger-fallback",
         strategy: "building-ledger",
         resolutionStatus: resolution.status,
         resolutionReason: resolution.reason || "",
+        basisDiscovery: basisDiscovery.diagnostics,
       },
     };
   }
@@ -993,19 +1009,130 @@ async function collectPermitProfileFromResolvedLots(record, initialDiagnostics) 
     return {
       profile: null,
       diagnostics: {
-        ...initialDiagnostics,
+        ...accumulatedDiagnostics,
         status: "ledger-fallback",
         strategy: "building-ledger",
         resolvedSources: resolution.sources,
+        basisDiscovery: basisDiscovery.diagnostics,
       },
     };
   }
 
-  return collectPermitProfile(record, {
+  const resolvedPermitResult = await collectPermitProfile(record, {
     sources: alternateSources,
-    previousAttempts: initialDiagnostics.attempts,
-    attemptedAt: initialDiagnostics.attemptedAt,
+    previousAttempts: accumulatedDiagnostics.attempts,
+    attemptedAt: accumulatedDiagnostics.attemptedAt,
   });
+  resolvedPermitResult.diagnostics.basisDiscovery = basisDiscovery.diagnostics;
+  return resolvedPermitResult;
+}
+
+async function discoverPermitSources(record) {
+  const requestedSource = record.requestedSource || record.source;
+  const dateWindow = permitCatalogDateWindow(record.metadata?.approvalDate);
+  const legalDongSource = {
+    sigunguCd: requestedSource.sigunguCd,
+    bjdongCd: requestedSource.bjdongCd,
+    ...dateWindow,
+  };
+  const catalogs = [
+    {
+      service: "housing-permit",
+      operation: "getHpBasisOulnInfo",
+    },
+    {
+      service: "building-permit",
+      operation: "getApBasisOulnInfo",
+    },
+  ];
+  const sources = [];
+  const diagnostics = {
+    strategy: "legal-dong-permit-basis",
+    legalDongSource,
+    services: [],
+    candidates: [],
+  };
+
+  for (const catalog of catalogs) {
+    const cacheKey = [
+      catalog.service,
+      legalDongSource.sigunguCd,
+      legalDongSource.bjdongCd,
+      legalDongSource.startDate || "",
+      legalDongSource.endDate || "",
+    ].join(":");
+    let rows = permitBasisCatalogByDong.get(cacheKey);
+    let cached = true;
+    if (!rows) {
+      cached = false;
+      try {
+        assertBudget(catalog.operation);
+        const result = await molit.fetchPermitRows(
+          catalog.service,
+          catalog.operation,
+          legalDongSource
+        );
+        rows = result.items;
+        permitBasisCatalogByDong.set(cacheKey, rows);
+        diagnostics.services.push({
+          ...catalog,
+          status: "ready",
+          cached,
+          rows: rows.length,
+          pageCount: result.pageCount,
+        });
+      } catch (error) {
+        diagnostics.services.push({
+          ...catalog,
+          status: "error",
+          cached,
+          rows: 0,
+          error: error.message,
+        });
+        continue;
+      }
+    } else {
+      diagnostics.services.push({
+        ...catalog,
+        status: "ready",
+        cached,
+        rows: rows.length,
+      });
+    }
+
+    const resolved = resolvePermitSourcesFromBasisRows({
+      rows,
+      metadata: {
+        ...(record.metadata || {}),
+        expectedHouseholds: record.expectedHouseholds,
+      },
+      requestedSource,
+    });
+    sources.push(...resolved.sources);
+    diagnostics.candidates.push(
+      ...resolved.candidates.map((candidate) => ({
+        ...candidate,
+        service: catalog.service,
+      }))
+    );
+  }
+
+  return {
+    sources: uniquePermitSources(sources)
+      .filter((source) => !samePermitSource(source, requestedSource))
+      .slice(0, 8),
+    diagnostics,
+  };
+}
+
+function permitCatalogDateWindow(approvalDate) {
+  const year = Number(String(approvalDate || "").slice(0, 4));
+  if (!Number.isInteger(year) || year < 1900 || year > 2100) return {};
+  const decade = Math.floor(year / 10) * 10;
+  return {
+    startDate: `${Math.max(1900, decade - 5)}0101`,
+    endDate: `${Math.min(2100, decade + 14)}1231`,
+  };
 }
 
 function uniquePermitSources(sources) {
