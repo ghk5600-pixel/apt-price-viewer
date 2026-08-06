@@ -95,7 +95,7 @@ const verifiedResolutionByComplexKey = new Map();
 const permitBasisCatalogByDong = new Map();
 
 const report = {
-  version: "v2026.08.06-01-rc.4",
+  version: "v2026.08.06-01-rc.5",
   runId,
   scope: {
     region: "서울특별시",
@@ -715,8 +715,6 @@ async function collectOneComplex(row, record) {
       record.permitCollection = permitResult.diagnostics;
       if (permitResult.profile) {
         applyPermitProfile(record, permitResult.profile, permitResult.diagnostics);
-      } else if (!config.enableLedgerFallback) {
-        markPermitUnavailable(record, permitResult.diagnostics);
       } else {
         const resolvedPermitResult = await collectPermitProfileFromResolvedLots(
           record,
@@ -729,6 +727,8 @@ async function collectOneComplex(row, record) {
             resolvedPermitResult.profile,
             resolvedPermitResult.diagnostics
           );
+        } else if (!config.enableLedgerFallback) {
+          markPermitUnavailable(record, resolvedPermitResult.diagnostics);
         } else {
           prepareLedgerFallback(record, resolvedPermitResult.diagnostics);
         }
@@ -966,6 +966,16 @@ async function collectPermitProfileFromResolvedLots(record, initialDiagnostics) 
     discoveredPermitResult.diagnostics.basisDiscovery = basisDiscovery.diagnostics;
     if (discoveredPermitResult.profile) return discoveredPermitResult;
     accumulatedDiagnostics = discoveredPermitResult.diagnostics;
+  }
+
+  if (!config.enableLedgerFallback) {
+    return {
+      profile: null,
+      diagnostics: {
+        ...accumulatedDiagnostics,
+        basisDiscovery: basisDiscovery.diagnostics,
+      },
+    };
   }
 
   let resolution = record.resolution;
