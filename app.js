@@ -1,5 +1,5 @@
-const APP_VERSION = "v2026.08.11-01-rc.2";
-const APP_UPDATED_AT = "2026-08-06";
+const APP_VERSION = "v2026.08.11-01-rc.3";
+const APP_UPDATED_AT = "2026-08-11";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
 const FAVORITES_KEY = "apt-monitor-favorites-v1";
@@ -17,7 +17,7 @@ const BUILDING_HUB_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
 const DEFAULT_KAKAO_JAVASCRIPT_KEY = "f1381fcba950abff23056942bd19d544";
 const ADMIN_QUERY_PARAM = "admin";
-const SUPPLY_CALCULATION_VERSION = "supply-model-v13-strict-common-area";
+const SUPPLY_CALCULATION_VERSION = "supply-model-v14-on-demand-d1";
 const SUPPLY_PROFILE_POLL_DELAY = 750;
 const SUPPLY_PROFILE_MAX_POLLS = 500;
 
@@ -825,10 +825,7 @@ function toggleKakaoPlaceFavorite(placeId) {
     saveCustomComplexes();
   }
 
-  const shouldRefreshAfterToggle = Boolean(transactionsByComplex[complex.id]?.length);
-  if (toggleFavorite(complex.id) && shouldRefreshAfterToggle) {
-    refreshRealTransactionsForComplex(complex.id);
-  }
+  toggleFavorite(complex.id);
 }
 
 async function toggleAptListFavorite(searchId) {
@@ -1577,8 +1574,8 @@ async function refreshSupplyProfileForComplex(complexId) {
 
   const params = buildBuildingHubParams(complex);
   if (!params) {
-    complex.supplyProfileStatus = "empty";
-    complex.supplyProfileMessage = "현재 지번을 확인하지 못했습니다.";
+    complex.supplyProfileStatus = "waiting-location";
+    complex.supplyProfileMessage = "단지 지번 확인 후 공급면적을 자동 계산합니다.";
     saveCustomComplexes();
     render();
     return;
@@ -1591,7 +1588,13 @@ async function refreshSupplyProfileForComplex(complexId) {
     return;
   }
 
-  const requestPromise = pollSupplyProfile(complex, params)
+  const registrationToken = complex.pendingSupplyRegistrationToken || "";
+  const requestPromise = pollSupplyProfile(complex, params, {
+    registrationToken,
+    forceRetry:
+      Boolean(registrationToken) ||
+      ["error", "upstream-pending"].includes(complex.supplyProfileStatus),
+  })
     .catch((error) => {
       complex.supplyProfileStatus = "error";
       complex.supplyProfileMessage = error.message || "공급면적 프로필 조회 실패";
@@ -1605,14 +1608,24 @@ async function refreshSupplyProfileForComplex(complexId) {
   return requestPromise;
 }
 
-async function pollSupplyProfile(complex, params) {
+async function pollSupplyProfile(complex, params, options = {}) {
   complex.supplyProfileStatus = "loading";
   complex.supplyProfileMessage = "건축HUB 공급면적 준비 중";
   render();
 
+  let registrationToken = String(options.registrationToken || "");
   for (let poll = 0; poll < SUPPLY_PROFILE_MAX_POLLS; poll += 1) {
-    const response = await fetch(buildSupplyProfileRequestUrl(complex, params));
+    const response = await fetch(
+      buildSupplyProfileRequestUrl(complex, params, {
+        registrationToken,
+        forceRetry: Boolean(options.forceRetry) && poll === 0,
+      })
+    );
     const payload = await response.json().catch(() => ({}));
+    if (registrationToken) {
+      registrationToken = "";
+      complex.pendingSupplyRegistrationToken = "";
+    }
     if (payload.status === "ready" && payload.profile) {
       complex.supplyProfile = payload.profile;
       complex.supplyProfileStatus = "ready";
@@ -1627,7 +1640,12 @@ async function pollSupplyProfile(complex, params) {
     }
 
     if (payload.status === "failed" || payload.status === "upstream-pending") {
-      throw new Error(payload.error || "건축HUB 공급면적 수집에 실패했습니다.");
+      const errorCode = payload.errorDetails?.resultCode
+        ? ` (${payload.errorDetails.resultCode})`
+        : "";
+      throw new Error(
+        `${payload.error || "건축HUB 공급면적 수집에 실패했습니다."}${errorCode}`
+      );
     }
     if (!response.ok && response.status !== 202) {
       throw new Error(payload.error || `공급면적 API 응답 오류: ${response.status}`);
@@ -1649,7 +1667,7 @@ async function pollSupplyProfile(complex, params) {
   throw new Error("공급면적 수집이 계속 진행 중입니다. 단지를 다시 선택하면 이어서 처리합니다.");
 }
 
-function buildSupplyProfileRequestUrl(complex, params) {
+function buildSupplyProfileRequestUrl(complex, params, options = {}) {
   const url = new URL("/api/supply-profile", window.location.origin);
   url.searchParams.set("complexKey", buildSupplyComplexKey(complex, params));
   url.searchParams.set("sigunguCd", params.sigunguCd);
@@ -1663,6 +1681,12 @@ function buildSupplyProfileRequestUrl(complex, params) {
   url.searchParams.set("approvalDate", complex.approvalDate || "");
   if (Number(complex.households) > 0) {
     url.searchParams.set("expectedHouseholds", String(Math.round(Number(complex.households))));
+  }
+  if (options.registrationToken) {
+    url.searchParams.set("registrationToken", options.registrationToken);
+  }
+  if (options.forceRetry) {
+    url.searchParams.set("retry", "1");
   }
   return url.toString();
 }
@@ -1693,6 +1717,9 @@ function formatSupplyProfileProgressMessage(payload, complex) {
 }
 
 function formatSupplyProfileReadyMessage(payload) {
+  if (payload.storage === "d1" && payload.cacheHit) {
+    return "D1에 저장된 공급면적을 즉시 적용했습니다.";
+  }
   const storageMessage =
     payload.storage === "d1" ? "D1 공급면적 저장 완료" : "시험용 공급면적 캐시 완료";
   const validation = payload.validation || payload.profile?.householdValidation;
@@ -2654,8 +2681,12 @@ function toggleFavorite(id) {
 
   if (state.favorites.includes(id)) {
     state.favorites = state.favorites.filter((favoriteId) => favoriteId !== id);
+    complex.pendingSupplyRegistrationToken = "";
   } else {
     state.favorites = [...state.favorites, id];
+    if (isUserRegisteredSource(complex?.source)) {
+      complex.pendingSupplyRegistrationToken = createSupplyRegistrationToken(complex);
+    }
   }
 
   if (wasSelected && !state.favorites.includes(id)) {
@@ -2670,10 +2701,23 @@ function toggleFavorite(id) {
   ensureValidAreaGroup();
   render();
 
-  if (!wasFavorite && isUserRegisteredSource(complex?.source) && !transactionsByComplex[complex.id]?.length) {
-    refreshRealTransactionsForComplex(complex.id);
+  if (!wasFavorite && isUserRegisteredSource(complex?.source)) {
+    if (
+      !transactionsByComplex[complex.id]?.length ||
+      !complex.legalDongFullCode ||
+      !complex.kaptCode
+    ) {
+      refreshRealTransactionsForComplex(complex.id);
+    } else {
+      refreshSupplyProfileForComplex(complex.id);
+    }
   }
   return true;
+}
+
+function createSupplyRegistrationToken(complex) {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `${complex.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function ensureValidAreaGroup() {
@@ -3272,6 +3316,7 @@ function loadCustomComplexes() {
             ? complex.supplyProfile
             : null,
         lastSupplyProfileSync: complex.lastSupplyProfileSync || "",
+        pendingSupplyRegistrationToken: complex.pendingSupplyRegistrationToken || "",
         lastBasisSync: complex.lastBasisSync || "",
         realTransactions: Array.isArray(complex.realTransactions) ? complex.realTransactions : [],
         tradeStatus:

@@ -75,8 +75,9 @@ Workers & Pages
 → Variable name: SUPPLY_DB
 ```
 
-테이블 정의는 `migrations/0001_supply_profile_cache.sql`에 있습니다. 함수도 최초
-요청에서 동일한 테이블이 없으면 자동 생성합니다. Preview에 D1이 아직 연결되지
+프로필 테이블은 `migrations/0001_supply_profile_cache.sql`, 관심 등록 수요와 재시도
+상태 테이블은 `migrations/0004_supply_profile_usage.sql`에 있습니다. 함수도 최초
+요청에서 두 테이블이 없으면 자동 생성합니다. Preview에 D1이 아직 연결되지
 않은 경우 RC는 엣지 캐시로 시험 동작하지만, 영구 공용 저장 검증에는 D1이 필요합니다.
 
 Preview와 Production은 바인딩이 서로 분리되어 있습니다. RC 시험 주소에서는
@@ -108,6 +109,17 @@ https://<Preview 주소>/api/debug-env
 수집 중 D1에는 원본 행 전체가 아니라 공급면적 후보별 누적 세대수와 페이지 경계의
 미완성 세대 한 건만 저장합니다. 수집 완료 후에는 진행 상태도 제거하고 최종
 공급면적 프로필만 영구 보관합니다.
+
+`v2026.08.11-01-rc.3`부터 최신 계산 버전으로 준비된 D1 프로필은
+`MOLIT_SERVICE_KEY` 확인과 건축HUB 호출보다 먼저 반환됩니다. 따라서 한 사용자가
+계산을 완료한 단지는 이후 모든 사용자가 같은 K-apt 코드로 즉시 사용할 수 있습니다.
+
+관심단지 등록 횟수가 높은 미완료 단지는 GitHub Actions의
+`Popular supply profile precompute` 작업이 매일 Cloudflare Pages Function을 통해
+이어 계산합니다. 이 작업은 기존 GitHub Secrets의 `CLOUDFLARE_ACCOUNT_ID`,
+`CLOUDFLARE_D1_DATABASE_ID`, `CLOUDFLARE_API_TOKEN`만 사용하며 별도의 국토부
+인증키를 GitHub에서 건축HUB로 직접 보내지 않습니다. RC 주소로 시험할 때만 Actions
+수동 실행 화면의 `base_url`에 Preview 주소를 입력합니다.
 
 ## Cloudflare Build 설정
 

@@ -19,24 +19,61 @@ import {
   LEDGER_MATCH_VERSION,
   resolveBuildingLedgerSources,
 } from "../_shared/building-match.js";
+import { resolvePermitSourcesFromBasisRows } from "../_shared/permit-match.js";
 import { createSupplyProfileStore } from "../_shared/supply-store.js";
 
 const BUILDING_AREA_OPERATION = "getBrExposPubuseAreaInfo";
 const COLLECTION_PROTOCOL_VERSION =
-  "page-fetch-v6-apartment-component-filter";
+  "page-fetch-v7-on-demand-d1";
 const PAGE_SIZE_CANDIDATES = [1000, 500, 100];
 const LEASE_MILLISECONDS = 45_000;
 const PAGE_FETCH_TIMEOUT_MILLISECONDS = 20_000;
 const UPSTREAM_RECHECK_MILLISECONDS = 30 * 24 * 60 * 60 * 1000;
 const RETRY_BACKOFF_MILLISECONDS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const PERMIT_BASIS_PAGE_SIZE = 1000;
+const PERMIT_BASIS_OPERATIONS = [
+  {
+    service: "housing-permit",
+    operation: "getHpBasisOulnInfo",
+    endpoint: "https://apis.data.go.kr/1613000/HsPmsHubService",
+  },
+  {
+    service: "building-permit",
+    operation: "getApBasisOulnInfo",
+    endpoint: "https://apis.data.go.kr/1613000/ArchPmsHubService",
+  },
+];
 
 export async function onRequestGet({ request, env }) {
   try {
+    const lookup = parseLookupRequest(request);
+    const store = await createSupplyProfileStore(env);
+    let record = await store.get(lookup.complexKey);
+
+    if (isReusableReadyRecord(record, lookup.expectedHouseholds)) {
+      if (lookup.expectedHouseholds) {
+        record.expectedHouseholds = lookup.expectedHouseholds;
+      }
+      const changed = syncHouseholdValidation(record);
+      if (changed) {
+        record.updatedAt = new Date().toISOString();
+        await store.put(lookup.complexKey, record);
+      }
+      await store.noteAccess?.(lookup.complexKey, {
+        registrationToken: lookup.registrationToken,
+        status: record.status,
+      });
+      return profileResponse(record, store.mode, { cacheHit: true });
+    }
+
     const serviceKey = requireServiceKey(env);
     const requestData = parseRequest(request);
-    const store = await createSupplyProfileStore(env);
-    let record = await store.get(requestData.complexKey);
+    await store.noteAccess?.(requestData.complexKey, {
+      registrationToken: requestData.registrationToken,
+      requestData,
+      status: record?.status || "building",
+    });
 
     if (!record || shouldResetRecord(record, requestData)) {
       record = createRecord(requestData);
@@ -59,7 +96,7 @@ export async function onRequestGet({ request, env }) {
         record.updatedAt = new Date().toISOString();
         await store.put(requestData.complexKey, record);
       }
-      return profileResponse(record, store.mode);
+      return profileResponse(record, store.mode, { cacheHit: true });
     }
 
     const now = Date.now();
@@ -118,12 +155,22 @@ export async function onRequestGet({ request, env }) {
     await store.put(requestData.complexKey, record);
 
     return record.status === "ready"
-      ? profileResponse(record, store.mode)
+      ? profileResponse(record, store.mode, { cacheHit: false })
       : progressResponse(record, store.mode, record.status === "failed" ? 502 : 202);
   } catch (error) {
     const message = error.message || "Supply profile request failed.";
     return errorJson(message, message.startsWith("Missing required parameter:") ? 400 : 500);
   }
+}
+
+function parseLookupRequest(request) {
+  const complexKey = getSearchParam(request, "complexKey");
+  assertRequired({ complexKey });
+  return {
+    complexKey,
+    expectedHouseholds: positiveInteger(getSearchParam(request, "expectedHouseholds")),
+    registrationToken: getSearchParam(request, "registrationToken"),
+  };
 }
 
 function parseRequest(request) {
@@ -161,6 +208,7 @@ function parseRequest(request) {
       approvalDate: getSearchParam(request, "approvalDate"),
     }),
     expectedHouseholds: positiveInteger(getSearchParam(request, "expectedHouseholds")),
+    registrationToken: getSearchParam(request, "registrationToken"),
     forceRetry: getSearchParam(request, "retry") === "1",
   };
 }
@@ -175,6 +223,7 @@ export function createRecord(requestData) {
     requestedSource: requestData.source,
     sourceSignature: requestData.sourceSignature,
     metadata: requestData.metadata || {},
+    sourceDiscovery: null,
     resolution: null,
     resolvedSources: [],
     sourcePlans: [],
@@ -202,10 +251,29 @@ export function createRecord(requestData) {
 }
 
 export function shouldResetRecord(record, requestData) {
+  const expectedHouseholdsChanged =
+    record.status === "ready" &&
+    requestData.expectedHouseholds &&
+    Number(record.profile?.unitCount) !== Number(requestData.expectedHouseholds);
   return (
     record.calculationVersion !== SUPPLY_CALCULATION_VERSION ||
-    record.sourceSignature !== requestData.sourceSignature ||
+    expectedHouseholdsChanged ||
+    (record.status !== "ready" && record.sourceSignature !== requestData.sourceSignature) ||
     (record.status !== "ready" && record.collectionProtocolVersion !== COLLECTION_PROTOCOL_VERSION)
+  );
+}
+
+function isReusableReadyRecord(record, expectedHouseholds) {
+  if (
+    record?.status !== "ready" ||
+    record.calculationVersion !== SUPPLY_CALCULATION_VERSION ||
+    !record.profile
+  ) {
+    return false;
+  }
+  return (
+    !expectedHouseholds ||
+    Number(record.profile.unitCount) === Number(expectedHouseholds)
   );
 }
 
@@ -264,6 +332,7 @@ export async function advanceCollection(record, serviceKey, options = {}) {
         complexKey: record.complexKey,
         source: {
           requested: record.resolution.requestedSource,
+          fallbackRequested: record.resolution.fallbackRequestedSource || null,
           resolved: record.resolvedSources,
           managementPks: record.resolution.managementPks,
           apartmentComponents: record.resolution.components || [],
@@ -304,6 +373,7 @@ export async function advanceCollection(record, serviceKey, options = {}) {
         excludedComponents: record.resolution.excludedComponents || [],
         managementPks: record.resolution.managementPks,
         matchedAt: record.resolution.matchedAt,
+        sourceDiscovery: record.sourceDiscovery || null,
       };
       assertCompletedProfileValidation(record.profile, pageNo);
       record.status = "ready";
@@ -359,7 +429,7 @@ async function ensureBuildingLedgerResolution(record, serviceKey, onRequest) {
     return;
   }
 
-  const resolution = await resolveBuildingLedgerSources({
+  let resolution = await resolveBuildingLedgerSources({
     requestedSource: record.requestedSource || record.source,
     metadata: {
       ...(record.metadata || {}),
@@ -375,6 +445,18 @@ async function ensureBuildingLedgerResolution(record, serviceKey, onRequest) {
         onRequest
       ),
   });
+  if (resolution.status !== "matched" || !resolution.sources.length) {
+    const fallback = await resolvePermitLotFallback(
+      record,
+      serviceKey,
+      onRequest
+    );
+    if (fallback.resolution) {
+      resolution = fallback.resolution;
+    } else {
+      record.sourceDiscovery = fallback.diagnostics;
+    }
+  }
   record.resolution = resolution;
   if (resolution.status !== "matched" || !resolution.sources.length) {
     throw createCollectionError({
@@ -399,6 +481,229 @@ async function ensureBuildingLedgerResolution(record, serviceKey, onRequest) {
   }));
   record.activeSourceIndex = 0;
   activateSourcePlan(record, 0);
+}
+
+async function resolvePermitLotFallback(record, serviceKey, onRequest) {
+  let discovery = record.sourceDiscovery;
+  if (
+    !discovery ||
+    discovery.version !== "permit-lot-fallback-v1" ||
+    !Array.isArray(discovery.sources)
+  ) {
+    discovery = await discoverPermitLotSources(record, serviceKey, onRequest);
+    record.sourceDiscovery = discovery;
+  }
+
+  const attempts = [];
+  for (const source of discovery.sources.slice(0, 4)) {
+    const resolution = await resolveBuildingLedgerSources({
+      requestedSource: source,
+      metadata: {
+        ...(record.metadata || {}),
+        expectedHouseholds: record.expectedHouseholds,
+      },
+      fetchPage: (operation, fallbackSource, pageNo, pageSize) =>
+        fetchBuildingLedgerPage(
+          serviceKey,
+          operation,
+          fallbackSource,
+          pageNo,
+          pageSize,
+          onRequest
+        ),
+    });
+    attempts.push({
+      source,
+      status: resolution.status,
+      reasonCode: resolution.reasonCode || "",
+      reason: resolution.reason || "",
+    });
+    if (resolution.status === "matched" && resolution.sources.length) {
+      discovery.status = "matched";
+      discovery.selectedSource = source;
+      discovery.attempts = attempts;
+      discovery.completedAt = new Date().toISOString();
+      return {
+        resolution: {
+          ...resolution,
+          requestedSource: record.requestedSource || record.source,
+          fallbackRequestedSource: source,
+          sourceDiscovery: discovery,
+        },
+        diagnostics: discovery,
+      };
+    }
+  }
+
+  discovery.status = discovery.sources.length ? "not-matched" : discovery.status;
+  discovery.attempts = attempts;
+  discovery.completedAt = new Date().toISOString();
+  return { resolution: null, diagnostics: discovery };
+}
+
+async function discoverPermitLotSources(record, serviceKey, onRequest) {
+  const requestedSource = record.requestedSource || record.source;
+  const legalDongSource = {
+    sigunguCd: requestedSource.sigunguCd,
+    bjdongCd: requestedSource.bjdongCd,
+    ...permitCatalogDateWindow(record.metadata?.approvalDate),
+  };
+  const diagnostics = {
+    version: "permit-lot-fallback-v1",
+    strategy: "building-ledger-primary-permit-lot-fallback",
+    status: "not-found",
+    legalDongSource,
+    sources: [],
+    services: [],
+    candidates: [],
+    attemptedAt: new Date().toISOString(),
+    completedAt: "",
+  };
+
+  for (const catalog of PERMIT_BASIS_OPERATIONS) {
+    try {
+      const page = await fetchPermitBasisPage(
+        serviceKey,
+        catalog,
+        legalDongSource,
+        onRequest
+      );
+      const resolved = resolvePermitSourcesFromBasisRows({
+        rows: page.items,
+        metadata: {
+          ...(record.metadata || {}),
+          expectedHouseholds: record.expectedHouseholds,
+        },
+        requestedSource,
+      });
+      diagnostics.services.push({
+        service: catalog.service,
+        operation: catalog.operation,
+        status: "ready",
+        returnedRows: page.items.length,
+        totalRows: page.totalCount,
+      });
+      diagnostics.candidates.push(
+        ...resolved.candidates.map((candidate) => ({
+          ...candidate,
+          service: catalog.service,
+        }))
+      );
+      diagnostics.sources = uniquePermitSources([
+        ...diagnostics.sources,
+        ...resolved.sources,
+      ]).filter((source) => !sameSource(source, requestedSource));
+      if (diagnostics.sources.length) {
+        diagnostics.status = "candidates-found";
+        break;
+      }
+    } catch (error) {
+      diagnostics.services.push({
+        service: catalog.service,
+        operation: catalog.operation,
+        status: "error",
+        error: error.message || "인허가 지번 탐색 실패",
+      });
+    }
+  }
+
+  diagnostics.completedAt = new Date().toISOString();
+  return diagnostics;
+}
+
+async function fetchPermitBasisPage(
+  serviceKey,
+  catalog,
+  source,
+  onRequest
+) {
+  const url = new URL(`${catalog.endpoint}/${catalog.operation}`);
+  url.searchParams.set("serviceKey", serviceKey);
+  Object.entries(source).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && String(value).trim()) {
+      url.searchParams.set(key, String(value));
+    }
+  });
+  url.searchParams.set("_type", "json");
+  url.searchParams.set("pageNo", "1");
+  url.searchParams.set("numOfRows", String(PERMIT_BASIS_PAGE_SIZE));
+
+  let response;
+  let responseText = "";
+  try {
+    onRequest?.({
+      operation: catalog.operation,
+      pageNo: 1,
+      pageSize: PERMIT_BASIS_PAGE_SIZE,
+    });
+    response = await fetch(url, {
+      headers: { accept: "application/json, text/plain, */*" },
+      signal: AbortSignal.timeout(PAGE_FETCH_TIMEOUT_MILLISECONDS),
+    });
+    responseText = await response.text();
+  } catch (error) {
+    throw new Error(
+      error?.name === "TimeoutError" || error?.name === "AbortError"
+        ? "인허가 지번 탐색 응답 시간이 초과되었습니다."
+        : error?.message || "인허가 지번 탐색 네트워크 요청에 실패했습니다."
+    );
+  }
+
+  const payload = parseResponsePayload(responseText);
+  const header = payload?.response?.header || {};
+  const resultCode = String(header.resultCode || extractXmlValue(responseText, "resultCode") || "");
+  const resultMessage = String(
+    header.resultMsg || extractXmlValue(responseText, "resultMsg") || ""
+  );
+  if (!response.ok || (resultCode && !["00", "000"].includes(resultCode))) {
+    throw new Error(
+      resultMessage || `인허가 지번 탐색 API 응답 오류: ${response.status}`
+    );
+  }
+  const body = payload?.response?.body || {};
+  return {
+    items: normalizeItems(body.items || body.item),
+    totalCount: Math.max(0, Number(body.totalCount || 0)),
+  };
+}
+
+function permitCatalogDateWindow(approvalDate) {
+  const year = Number(String(approvalDate || "").slice(0, 4));
+  if (!Number.isInteger(year) || year < 1900 || year > 2100) return {};
+  return {
+    startDate: `${Math.max(1900, year - 8)}0101`,
+    endDate: `${Math.min(2100, year + 2)}1231`,
+  };
+}
+
+function uniquePermitSources(sources) {
+  const unique = new Map();
+  for (const source of sources || []) {
+    const normalized = {
+      sigunguCd: String(source?.sigunguCd || "").trim(),
+      bjdongCd: String(source?.bjdongCd || "").trim(),
+      platGbCd: String(source?.platGbCd ?? "0").trim() || "0",
+      bun: String(source?.bun || "").trim().padStart(4, "0"),
+      ji: String(source?.ji || "0").trim().padStart(4, "0"),
+    };
+    if (!normalized.sigunguCd || !normalized.bjdongCd || !normalized.bun) continue;
+    unique.set(sourceKey(normalized), normalized);
+  }
+  return [...unique.values()];
+}
+
+function sameSource(left, right) {
+  return sourceKey(left) === sourceKey(right);
+}
+
+function sourceKey(source = {}) {
+  return [
+    String(source.sigunguCd || "").trim(),
+    String(source.bjdongCd || "").trim(),
+    String(source.platGbCd ?? "0").trim() || "0",
+    String(source.bun || "").trim().padStart(4, "0"),
+    String(source.ji || "0").trim().padStart(4, "0"),
+  ].join("-");
 }
 
 function activateSourcePlan(record, index) {
@@ -602,11 +907,12 @@ async function fetchBuildingLedgerPage(
   };
 }
 
-function profileResponse(record, storage) {
+function profileResponse(record, storage, { cacheHit = false } = {}) {
   return json(
     {
       status: "ready",
       storage,
+      cacheHit,
       profile: record.profile,
       validation: record.profile?.householdValidation || null,
       fetchedAt: record.fetchedAt,
@@ -753,6 +1059,7 @@ export function resetResolution(record) {
   record.totalRows = null;
   record.lastSuccessfulPage = 0;
   record.collectionState = createCollectionState();
+  record.sourceDiscovery = null;
   record.nextRetryAt = "";
   record.leaseUntil = "";
 }

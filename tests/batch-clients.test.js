@@ -627,7 +627,7 @@ test("master catalog statuses are synchronized and undated rows are finalized", 
   assert.match(calls[1].sql, /APPROVAL_DATE_MISSING_OR_INVALID/);
   assert.deepEqual(calls[1].params.slice(0, 4), [
     "seoul-sale-apartment-master-v1",
-    "supply-model-v13-strict-common-area",
+    "supply-model-v14-on-demand-d1",
     "19000101",
     "20991231",
   ]);

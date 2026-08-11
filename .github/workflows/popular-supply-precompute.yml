@@ -1,0 +1,71 @@
+name: Popular supply profile precompute
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Cloudflare Pages URL"
+        required: false
+        default: "https://apt-price-viewer.pages.dev"
+        type: string
+      max_complexes:
+        description: "이번 실행에서 처리할 인기 단지 수"
+        required: true
+        default: "10"
+        type: string
+      max_polls:
+        description: "단지별 최대 API 호출 수"
+        required: true
+        default: "20"
+        type: string
+      retry_failed:
+        description: "영구 실패 단지도 다시 시도"
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: "15 18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: popular-supply-profile-precompute
+  cancel-in-progress: false
+
+jobs:
+  precompute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      SUPPLY_PROFILE_BASE_URL: ${{ inputs.base_url || 'https://apt-price-viewer.pages.dev' }}
+      POPULAR_MAX_COMPLEXES: ${{ inputs.max_complexes || '10' }}
+      POPULAR_MAX_POLLS: ${{ inputs.max_polls || '20' }}
+      POPULAR_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
+      POPULAR_SUPPLY_REPORT_PATH: popular-supply-report.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run tests
+        run: npm test
+
+      - name: Precompute popular complexes through Cloudflare
+        run: npm run precompute:popular-supply
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: popular-supply-${{ github.run_number }}
+          path: popular-supply-report.json
+          if-no-files-found: warn

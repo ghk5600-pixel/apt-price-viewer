@@ -115,7 +115,7 @@ const verifiedResolutionByComplexKey = new Map();
 const permitBasisCatalogByDong = new Map();
 
 const report = {
-  version: "v2026.08.11-01-rc.2",
+  version: "v2026.08.11-01-rc.3",
   runId,
   scope: {
     region: "서울특별시",

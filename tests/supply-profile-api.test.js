@@ -395,6 +395,145 @@ test("대표 지번 조회가 0건이어도 같은 법정동의 동일 단지명
   }
 });
 
+test("D1 준비값은 국토부 인증키 없이도 모든 사용자에게 즉시 반환한다", async () => {
+  const originalFetch = globalThis.fetch;
+  let areaRequestCount = 0;
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    if (!isAreaRequest(parsed)) return discoveryResponse();
+    areaRequestCount += 1;
+    return successResponse([
+      row("shared-cache-unit", "전유", 84.95, "아파트"),
+      row("shared-cache-unit", "공용", 26.77, "계단실"),
+    ]);
+  };
+
+  try {
+    const url = requestUrl("shared-ready-complex", { expectedHouseholds: 1 });
+    const calculated = await callApi(url);
+    assert.equal(calculated.payload.status, "ready");
+    assert.equal(calculated.payload.cacheHit, false);
+
+    const response = await onRequestGet({
+      request: new Request(url),
+      env: {},
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "ready");
+    assert.equal(payload.cacheHit, true);
+    assert.equal(payload.profile.unitCount, 1);
+    assert.equal(areaRequestCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("건축물대장 매칭 실패 때만 주택인허가에서 대체 지번을 찾아 다시 검증한다", async () => {
+  const originalFetch = globalThis.fetch;
+  const permitRequests = [];
+  const areaLots = [];
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    const operation = parsed.pathname.split("/").pop();
+    const bun = parsed.searchParams.get("bun") || "";
+    const ji = parsed.searchParams.get("ji") || "";
+    const numOfRows = Number(parsed.searchParams.get("numOfRows")) || 1000;
+
+    if (operation === "getHpBasisOulnInfo") {
+      permitRequests.push(operation);
+      return successResponse(
+        [
+          {
+            sigunguCd: "11680",
+            bjdongCd: "11400",
+            platGbCd: "0",
+            bun: "0744",
+            ji: "0001",
+            bldNm: "허가대체아파트",
+            hhldCnt: 1,
+            useAprDay: "20250101",
+            mainPurpsCdNm: "공동주택",
+            etcPurps: "아파트",
+          },
+        ],
+        1,
+        numOfRows
+      );
+    }
+    if (operation === "getApBasisOulnInfo") {
+      permitRequests.push(operation);
+      return successResponse([], 0, numOfRows);
+    }
+    if (
+      ["getBrRecapTitleInfo", "getBrTitleInfo"].includes(operation) &&
+      bun === "0744" &&
+      ji === "0001"
+    ) {
+      return successResponse(
+        [
+          {
+            mgmBldrgstPk: "permit-fallback-title",
+            sigunguCd: "11680",
+            bjdongCd: "11400",
+            platGbCd: "0",
+            bun: "0744",
+            ji: "0001",
+            bldNm: "허가대체아파트 101동",
+            dongNm: "101동",
+            newPlatPlc: "서울특별시 강남구 허가로 10",
+            useAprDay: "20250101",
+            hhldCnt: 1,
+            mainPurpsCdNm: "공동주택",
+            etcPurps: "아파트",
+          },
+        ],
+        1,
+        numOfRows
+      );
+    }
+    if (operation === "getBrExposPubuseAreaInfo") {
+      areaLots.push(`${bun}-${ji}`);
+      return successResponse(
+        [
+          row("permit-fallback-unit", "전유", 84.95, "아파트"),
+          row("permit-fallback-unit", "공용", 26.77, "계단실"),
+        ],
+        2,
+        numOfRows
+      );
+    }
+    return successResponse([], 0, numOfRows);
+  };
+
+  try {
+    const { response, payload } = await callApi(
+      requestUrl("permit-lot-fallback-complex", {
+        expectedHouseholds: 1,
+        complexName: "허가대체아파트",
+        roadAddress: "서울특별시 강남구 허가로 10",
+        approvalDate: "20250101",
+      })
+    );
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "ready");
+    assert.deepEqual(permitRequests, ["getHpBasisOulnInfo"]);
+    assert.deepEqual(areaLots, ["0744-0001"]);
+    assert.equal(
+      payload.profile.source.fallbackRequested.bun,
+      "0744"
+    );
+    assert.equal(
+      payload.profile.ledgerMatch.sourceDiscovery.strategy,
+      "building-ledger-primary-permit-lot-fallback"
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 function requestUrl(
   complexKey,
   {
