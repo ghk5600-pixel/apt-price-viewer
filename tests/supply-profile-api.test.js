@@ -2,6 +2,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { onRequestGet } from "../functions/api/supply-profile.js";
 
+test("Cloudflare 522 pauses collection for an automatic retry", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async () => errorResponse(522, "HTTP_522", "connection timed out");
+
+  try {
+    const { response, payload } = await callApi(
+      requestUrl("cloudflare-522-complex", { expectedHouseholds: 10 })
+    );
+    assert.equal(response.status, 202);
+    assert.equal(payload.status, "paused");
+    assert.equal(payload.errorDetails.upstreamStatus, 522);
+    assert.equal(payload.errorDetails.retryable, true);
+    assert.ok(payload.retryAfterMs >= 4_000);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("1000행 페이지를 우선 선택하고 한 페이지씩 순차 저장한다", async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
