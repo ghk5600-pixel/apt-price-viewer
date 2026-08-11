@@ -21,6 +21,54 @@ test("Cloudflare 522 pauses collection for an automatic retry", async () => {
   }
 });
 
+test("공공데이터 호출 한도 초과는 최종 실패 대신 자동 재시도로 전환한다", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async () =>
+    errorResponse(200, "22", "LIMITED NUMBER OF SERVICE REQUESTS EXCEEDS ERROR");
+
+  try {
+    const { response, payload } = await callApi(requestUrl("request-limit-complex"));
+    assert.equal(response.status, 202);
+    assert.equal(payload.status, "paused");
+    assert.equal(payload.errorDetails.resultCode, "22");
+    assert.equal(payload.errorDetails.retryable, true);
+    assert.ok(payload.retryAfterMs >= 4_000);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("표제부 미탐색은 두 번 자동 재시도한 뒤 장기 보류로 전환한다", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async () => successResponse([], 0, 1000);
+
+  try {
+    const url = requestUrl("ledger-short-retry-complex");
+    const first = await callApi(url);
+    assert.equal(first.response.status, 202);
+    assert.equal(first.payload.status, "paused");
+    assert.equal(first.payload.errorDetails.resultCode, "LEDGER_MATCH_NOT_FOUND");
+    assert.equal(first.payload.errorDetails.retryable, true);
+
+    let record = globalThis.__supplyProfileRecords.get("ledger-short-retry-complex");
+    record.nextRetryAt = new Date(Date.now() - 1_000).toISOString();
+    const second = await callApi(url);
+    assert.equal(second.payload.status, "paused");
+    assert.equal(second.payload.consecutiveFailures, 2);
+
+    record = globalThis.__supplyProfileRecords.get("ledger-short-retry-complex");
+    record.nextRetryAt = new Date(Date.now() - 1_000).toISOString();
+    const third = await callApi(url);
+    assert.equal(third.payload.status, "upstream-pending");
+    assert.equal(third.payload.errorDetails.resultCode, "LEDGER_MATCH_NOT_FOUND");
+    assert.ok(third.payload.retryAfterMs > 29 * 24 * 60 * 60 * 1000);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("1000행 페이지를 우선 선택하고 한 페이지씩 순차 저장한다", async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];

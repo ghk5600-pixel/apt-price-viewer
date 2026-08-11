@@ -32,6 +32,7 @@ const DEFAULT_PAGES_PER_REQUEST = 3;
 const MAX_PAGES_PER_REQUEST = 6;
 const COLLECTION_BATCH_BUDGET_MILLISECONDS = 8_000;
 const UPSTREAM_RECHECK_MILLISECONDS = 30 * 24 * 60 * 60 * 1000;
+const LEDGER_MATCH_SHORT_RETRY_LIMIT = 2;
 const RETRY_BACKOFF_MILLISECONDS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 const RETRYABLE_HTTP_STATUSES = new Set([
   408,
@@ -160,7 +161,12 @@ export async function onRequestGet({ request, env }) {
       record.errorDetails = details;
       record.error = formatCollectionError(details);
       if (details.resultCode === "LEDGER_MATCH_NOT_FOUND") {
-        markUpstreamPending(record, details);
+        if (Number(record.consecutiveFailures || 0) < LEDGER_MATCH_SHORT_RETRY_LIMIT) {
+          details.retryable = true;
+          pauseRecord(record);
+        } else {
+          markUpstreamPending(record, details);
+        }
       } else if (details.retryable) {
         pauseRecord(record);
       } else {
@@ -1227,7 +1233,7 @@ function sanitizeErrorMessage(value) {
 }
 
 function isRetryableApiError(resultCode) {
-  return ["01", "02", "03", "04", "05", "99"].includes(String(resultCode));
+  return ["01", "02", "03", "04", "05", "22", "99"].includes(String(resultCode));
 }
 
 function positiveInteger(value) {

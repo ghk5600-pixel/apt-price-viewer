@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.08.11-01-rc.5";
+const APP_VERSION = "v2026.08.11-01-rc.6";
 const APP_UPDATED_AT = "2026-08-11";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
@@ -20,6 +20,7 @@ const ADMIN_QUERY_PARAM = "admin";
 const SUPPLY_CALCULATION_VERSION = "supply-model-v14-on-demand-d1";
 const SUPPLY_PROFILE_POLL_DELAY = 200;
 const SUPPLY_PROFILE_MAX_POLLS = 500;
+const SUPPLY_PROFILE_CLIENT_RETRY_DELAYS = [1_000, 3_000, 10_000, 30_000];
 
 const AREA_GROUPS = [
   { id: "59", label: "59타입", min: 58, max: 60, target: 59, method: "standard" },
@@ -1618,14 +1619,31 @@ async function pollSupplyProfile(complex, params, options = {}) {
   render();
 
   let registrationToken = String(options.registrationToken || "");
+  let forceRetryPending = Boolean(options.forceRetry);
+  let clientFailureCount = 0;
   for (let poll = 0; poll < SUPPLY_PROFILE_MAX_POLLS; poll += 1) {
-    const response = await fetch(
-      buildSupplyProfileRequestUrl(complex, params, {
-        registrationToken,
-        forceRetry: Boolean(options.forceRetry) && poll === 0,
-      })
-    );
+    let response;
+    try {
+      response = await fetch(
+        buildSupplyProfileRequestUrl(complex, params, {
+          registrationToken,
+          forceRetry: forceRetryPending,
+        })
+      );
+    } catch (error) {
+      const retryDelay = getSupplyProfileClientRetryDelay(clientFailureCount);
+      clientFailureCount += 1;
+      complex.supplyProfileStatus = "loading";
+      complex.supplyProfileMessage = `공급면적 서버 연결 지연 · ${Math.ceil(
+        retryDelay / 1000
+      )}초 후 자동 재시도`;
+      saveCustomComplexes();
+      render();
+      await delay(retryDelay);
+      continue;
+    }
     const payload = await response.json().catch(() => ({}));
+    forceRetryPending = false;
     if (registrationToken) {
       registrationToken = "";
       complex.pendingSupplyRegistrationToken = "";
@@ -1643,6 +1661,25 @@ async function pollSupplyProfile(complex, params, options = {}) {
       render();
       return;
     }
+
+    if (isTransientSupplyProfileResponse(response, payload)) {
+      const retryDelay = Math.max(
+        Number(payload.retryAfterMs) || 0,
+        getSupplyProfileClientRetryDelay(clientFailureCount)
+      );
+      clientFailureCount += 1;
+      complex.supplyProfileStatus = "loading";
+      complex.supplyProfileErrorCode =
+        payload.errorDetails?.resultCode || `HTTP_${response.status}`;
+      complex.supplyProfileMessage = `공급면적 서버 응답 지연 · ${Math.ceil(
+        retryDelay / 1000
+      )}초 후 자동 재시도`;
+      saveCustomComplexes();
+      render();
+      await delay(retryDelay);
+      continue;
+    }
+    clientFailureCount = 0;
 
     if (payload.status === "failed" || payload.status === "upstream-pending") {
       complex.supplyProfileErrorCode =
@@ -1672,6 +1709,30 @@ async function pollSupplyProfile(complex, params, options = {}) {
     await delay(retryDelay);
   }
   throw new Error("공급면적 수집이 계속 진행 중입니다. 단지를 다시 선택하면 이어서 처리합니다.");
+}
+
+function isTransientSupplyProfileResponse(response, payload) {
+  if (
+    ["paused", "failed", "upstream-pending"].includes(payload.status) ||
+    payload.errorDetails?.retryable === true
+  ) {
+    return false;
+  }
+  return (
+    response.status === 408 ||
+    response.status === 425 ||
+    response.status === 429 ||
+    response.status >= 500
+  );
+}
+
+function getSupplyProfileClientRetryDelay(failureCount) {
+  return SUPPLY_PROFILE_CLIENT_RETRY_DELAYS[
+    Math.min(
+      Math.max(0, Number(failureCount) || 0),
+      SUPPLY_PROFILE_CLIENT_RETRY_DELAYS.length - 1
+    )
+  ];
 }
 
 function buildSupplyProfileRequestUrl(complex, params, options = {}) {
