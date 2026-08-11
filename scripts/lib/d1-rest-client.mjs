@@ -148,6 +148,29 @@ export function createD1RestClient({
       );
     },
 
+    async resetSupplyCalculations() {
+      const before = await readSupplyCounts(query);
+      const resetAt = new Date().toISOString();
+
+      await query("DELETE FROM supply_profile_cache");
+      await query(
+        `UPDATE supply_batch_catalog SET
+           profile_status = 'pending',
+           profile_calculation_version = '',
+           attempt_count = 0,
+           last_error = '',
+           updated_at = ?1`,
+        [resetAt]
+      );
+      await query("DELETE FROM supply_batch_runs");
+
+      return {
+        resetAt,
+        before,
+        after: await readSupplyCounts(query),
+      };
+    },
+
     async getCatalogCount(
       catalogVersion = "",
       { approvalDateFrom = "", approvalDateTo = "" } = {}
@@ -494,6 +517,24 @@ export function createD1RestClient({
         ]
       );
     },
+  };
+}
+
+async function readSupplyCounts(query) {
+  const [profiles, catalog, runs] = await Promise.all([
+    query("SELECT COUNT(*) AS count FROM supply_profile_cache"),
+    query(
+      `SELECT COUNT(*) AS count,
+              SUM(CASE WHEN profile_status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+         FROM supply_batch_catalog`
+    ),
+    query("SELECT COUNT(*) AS count FROM supply_batch_runs"),
+  ]);
+  return {
+    profiles: Number(profiles.results?.[0]?.count || 0),
+    catalog: Number(catalog.results?.[0]?.count || 0),
+    pendingCatalog: Number(catalog.results?.[0]?.pending_count || 0),
+    runs: Number(runs.results?.[0]?.count || 0),
   };
 }
 

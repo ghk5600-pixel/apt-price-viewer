@@ -1,5 +1,5 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v11-permit-discovery-first";
+  "supply-model-v12-ledger-primary";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 
 export const STANDARD_AREA_GROUPS = [

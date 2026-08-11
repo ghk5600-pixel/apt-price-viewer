@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "batch:seoul-pilot": "node scripts/run-seoul-pilot.mjs",
+    "reset:supply-data": "node scripts/reset-supply-data.mjs",
     "probe:permit": "node scripts/probe-permit-api.mjs",
     "report:supply-progress": "node scripts/report-supply-progress.mjs",
     "test": "node --test tests/*.test.js"

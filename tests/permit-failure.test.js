@@ -75,11 +75,11 @@ test("산식이 같은 기존 인허가 성공 프로필은 재호출 없이 새
   assert.equal(migrated, true);
   assert.equal(
     record.calculationVersion,
-    "supply-model-v11-permit-discovery-first"
+    "supply-model-v12-ledger-primary"
   );
   assert.equal(
     record.profile.calculationVersion,
-    "supply-model-v11-permit-discovery-first"
+    "supply-model-v12-ledger-primary"
   );
 });
 

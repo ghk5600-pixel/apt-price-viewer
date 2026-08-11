@@ -31,12 +31,20 @@ import {
   SEOUL_MASTER_CATALOG_VERSION,
   sortPilotCatalog,
 } from "./lib/pilot-catalog.mjs";
+import {
+  parseTargetComplexNames,
+  selectCatalogTargets,
+} from "./lib/sample-selection.mjs";
 
 const SEOUL_SIDO_CODE = "11";
 const LEGACY_2020_CATALOG_VERSION =
   "seoul-sale-apartment-v7-apartment-unit-filter";
 const VALID_MODES = new Set(["catalog", "collect", "catalog-and-collect"]);
 const VALID_CATALOG_STRATEGIES = new Set(["master", "decade"]);
+const VALID_SOURCE_STRATEGIES = new Set([
+  "building-ledger-first",
+  "permit-first",
+]);
 const PERMIT_RETRY_BACKOFF_MILLISECONDS = [
   15 * 60_000,
   60 * 60_000,
@@ -64,6 +72,14 @@ const config = {
     "PILOT_CATALOG_STRATEGY",
     "master",
     VALID_CATALOG_STRATEGIES
+  ),
+  sourceStrategy: readChoice(
+    "PILOT_SOURCE_STRATEGY",
+    "building-ledger-first",
+    VALID_SOURCE_STRATEGIES
+  ),
+  targetComplexNames: parseTargetComplexNames(
+    process.env.PILOT_COMPLEX_NAMES
   ),
   reportPath: process.env.PILOT_REPORT_PATH || "seoul-pilot-report.json",
   reportHtmlPath:
@@ -99,7 +115,7 @@ const verifiedResolutionByComplexKey = new Map();
 const permitBasisCatalogByDong = new Map();
 
 const report = {
-  version: "v2026.08.06-01-rc.8",
+  version: "v2026.08.11-01-rc.1",
   runId,
   scope: {
     region: "서울특별시",
@@ -171,6 +187,11 @@ const report = {
     statusCounts: {},
     failures: [],
     results: [],
+    targetSelection: {
+      requestedNames: config.targetComplexNames,
+      matchedNames: [],
+      missingNames: [],
+    },
   },
   apiCallCount: 0,
   stoppedReason: "",
@@ -485,7 +506,11 @@ async function collectProfiles() {
     await d1.syncCatalogProfileStatuses(pilotCatalogVersion);
     await d1.finalizeUndatedCatalog(pilotCatalogVersion);
   }
-  const catalog = await d1.listCatalog(pilotCatalogVersion, getCatalogDateFilter());
+  let catalog = await d1.listCatalog(pilotCatalogVersion, getCatalogDateFilter());
+  const selection = selectCatalogTargets(catalog, config.targetComplexNames);
+  catalog = selection.rows;
+  report.collection.targetSelection.matchedNames = selection.matchedNames;
+  report.collection.targetSelection.missingNames = selection.missingNames;
   report.catalog.masterComplexes ||= await d1.getCatalogCount(pilotCatalogVersion);
   report.catalog.eligibleComplexes = catalog.length;
   for (const row of catalog) {
@@ -720,7 +745,10 @@ async function collectOneComplex(row, record) {
     record.permitCollection.completedAt = "";
   }
 
-  if (!record.permitCollection?.completedAt) {
+  if (
+    config.sourceStrategy === "permit-first" &&
+    !record.permitCollection?.completedAt
+  ) {
     try {
       const permitResult = await collectPermitProfile(record);
       record.permitCollection = permitResult.diagnostics;
@@ -788,6 +816,14 @@ async function collectOneComplex(row, record) {
     }
   }
   console.log(`공급면적 수집 시작: ${label}`);
+
+  if (config.sourceStrategy === "building-ledger-first") {
+    record.permitCollection = {
+      status: "deferred",
+      strategy: "building-ledger-primary",
+      completedAt: "",
+    };
+  }
 
   while (hasBudget()) {
     if (record.status === "upstream-pending") {

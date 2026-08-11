@@ -37,6 +37,25 @@ on:
           - catalog
           - collect
           - progress
+          - reset
+      source_strategy:
+        description: "Supply profile primary source"
+        required: true
+        default: "building-ledger-first"
+        type: choice
+        options:
+          - building-ledger-first
+          - permit-first
+      sample_complex_names:
+        description: "Optional comma-separated exact complex names"
+        required: false
+        default: ""
+        type: string
+      reset_confirmation:
+        description: "For reset mode, enter RESET_SUPPLY_CALCULATIONS"
+        required: false
+        default: ""
+        type: string
       catalog_strategy:
         description: "단지 카탈로그 방식"
         required: true
@@ -129,10 +148,14 @@ jobs:
       PILOT_REFRESH_CATALOG: ${{ inputs.refresh_catalog && '1' || '0' }}
       PILOT_ENABLE_LEDGER_FALLBACK: ${{ inputs.ledger_fallback == false && github.event_name == 'workflow_dispatch' && '0' || '1' }}
       PILOT_CATALOG_STRATEGY: ${{ inputs.catalog_strategy || 'master' }}
+      PILOT_SOURCE_STRATEGY: ${{ inputs.source_strategy || 'building-ledger-first' }}
+      PILOT_COMPLEX_NAMES: ${{ inputs.sample_complex_names || '' }}
       PILOT_REPORT_PATH: seoul-pilot-report.json
       PILOT_REPORT_HTML_PATH: seoul-pilot-report.html
       PILOT_REPORT_CSV_PATH: seoul-pilot-report.csv
       SUPPLY_PROGRESS_REPORT_PATH: supply-progress-report.json
+      SUPPLY_RESET_CONFIRMATION: ${{ inputs.reset_confirmation || '' }}
+      SUPPLY_RESET_REPORT_PATH: supply-reset-report.json
 
     steps:
       - name: Checkout
@@ -147,11 +170,11 @@ jobs:
         run: npm test
 
       - name: Run Seoul pilot
-        if: inputs.mode != 'progress'
+        if: inputs.mode != 'progress' && inputs.mode != 'reset'
         run: npm run batch:seoul-pilot
 
       - name: Upload pilot report
-        if: always() && inputs.mode != 'progress'
+        if: always() && inputs.mode != 'progress' && inputs.mode != 'reset'
         uses: actions/upload-artifact@v4
         with:
           name: seoul-supply-${{ inputs.approval_from || '20200101' }}-${{ inputs.approval_to || '20291231' }}-${{ github.run_number }}
@@ -161,6 +184,18 @@ jobs:
             seoul-pilot-report.csv
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Reset supply calculations
+        if: inputs.mode == 'reset'
+        run: npm run reset:supply-data
+
+      - name: Upload reset report
+        if: inputs.mode == 'reset'
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-reset-${{ github.run_number }}
+          path: supply-reset-report.json
+          retention-days: 30
 
       - name: Read D1 supply progress
         if: inputs.mode == 'progress'

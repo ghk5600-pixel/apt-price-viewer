@@ -627,10 +627,60 @@ test("master catalog statuses are synchronized and undated rows are finalized", 
   assert.match(calls[1].sql, /APPROVAL_DATE_MISSING_OR_INVALID/);
   assert.deepEqual(calls[1].params.slice(0, 4), [
     "seoul-sale-apartment-master-v1",
-    "supply-model-v11-permit-discovery-first",
+    "supply-model-v12-ledger-primary",
     "19000101",
     "20991231",
   ]);
+});
+
+test("supply reset removes profiles and runs while preserving the catalog", async () => {
+  const calls = [];
+  let countRead = 0;
+  const client = createD1RestClient({
+    accountId: "account-id",
+    databaseId: "database-id",
+    apiToken: "api-token",
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body);
+      calls.push(request);
+      let results = [];
+      if (/COUNT\(\*\).*supply_profile_cache/s.test(request.sql)) {
+        results = [{ count: countRead < 3 ? 53 : 0 }];
+        countRead += 1;
+      } else if (/COUNT\(\*\).*supply_batch_catalog/s.test(request.sql)) {
+        results = [{ count: 1431, pending_count: countRead < 3 ? 0 : 1431 }];
+        countRead += 1;
+      } else if (/COUNT\(\*\).*supply_batch_runs/s.test(request.sql)) {
+        results = [{ count: countRead < 3 ? 20 : 0 }];
+        countRead += 1;
+      }
+      return new Response(
+        JSON.stringify({ success: true, result: [{ success: true, results }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    },
+  });
+
+  const result = await client.resetSupplyCalculations();
+
+  assert.equal(result.before.profiles, 53);
+  assert.equal(result.after.profiles, 0);
+  assert.equal(result.after.catalog, 1431);
+  assert.equal(result.after.pendingCatalog, 1431);
+  assert.equal(result.after.runs, 0);
+  assert.ok(calls.some((call) => call.sql === "DELETE FROM supply_profile_cache"));
+  assert.ok(calls.some((call) => call.sql === "DELETE FROM supply_batch_runs"));
+  assert.ok(
+    calls.some((call) =>
+      /UPDATE supply_batch_catalog SET[\s\S]*profile_status = 'pending'/.test(
+        call.sql
+      )
+    )
+  );
+  assert.equal(
+    calls.some((call) => call.sql === "DELETE FROM supply_batch_catalog"),
+    false
+  );
 });
 
 function apiResponse(body) {
