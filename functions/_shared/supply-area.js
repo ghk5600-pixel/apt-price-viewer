@@ -3,6 +3,7 @@ export const SUPPLY_CALCULATION_VERSION =
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 export const MIN_SUPPLY_TO_EXCLUSIVE_RATIO = 1.1;
 export const MAX_SUPPLY_TO_EXCLUSIVE_RATIO = 1.8;
+const MAX_SHELTER_COMPONENT_TO_EXCLUSIVE_RATIO = 0.5;
 
 export const STANDARD_AREA_GROUPS = [
   { id: "59", label: "59타입", min: 58, max: 60, target: 59, method: "standard" },
@@ -101,6 +102,7 @@ const EXCLUDED_APARTMENT_UNIT_MARKERS = [
 export function createCollectionState() {
   return {
     carryRows: [],
+    pendingUnits: [],
     patterns: [],
     processedRows: 0,
     sourceRows: 0,
@@ -118,39 +120,172 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
   const apartmentComponents = normalizeApartmentComponents(
     options.apartmentComponents
   );
-  const incomingRows = sourceRows.map(compactAreaRow);
-  const combinedRows = [...state.carryRows, ...incomingRows]
-    .sort((left, right) => unitRowKey(left).localeCompare(unitRowKey(right)));
-  const groups = groupContiguousRows(combinedRows);
+  const incomingRows = [...state.carryRows, ...sourceRows.map(compactAreaRow)];
   const isFinal = Boolean(options.isFinal);
-  const processCount = isFinal ? groups.length : Math.max(0, groups.length - 1);
   const patternIndex = new Map(state.patterns.map((pattern) => [pattern.key, pattern]));
   const seenUnitHashes = new Set(state.seenUnitHashes);
+  const pendingUnitIndex = new Map(
+    state.pendingUnits.map((unit) => [unit.key, unit])
+  );
 
-  for (let index = 0; index < processCount; index += 1) {
-    const unitKey = unitRowKey(groups[index][0]);
-    const unitHash = unitKey ? hashUnitKey(unitKey) : "";
-    if (unitHash && seenUnitHashes.has(unitHash)) continue;
-    if (unitHash) seenUnitHashes.add(unitHash);
-    if (!isSelectedApartmentUnit(groups[index], apartmentComponents)) {
-      state.filteredRows += groups[index].length;
-      state.skippedUnits += 1;
-      continue;
-    }
-    const unit = buildUnitPattern(groups[index]);
+  incomingRows.forEach((row) => {
+    const unitKey = unitRowKey(row);
+    if (!unitKey) return;
+    const unitHash = hashUnitKey(unitKey);
+    if (seenUnitHashes.has(unitHash)) return;
+    let unit = pendingUnitIndex.get(unitHash);
     if (!unit) {
-      state.skippedUnits += 1;
-      continue;
+      unit = createPendingUnit(unitHash);
+      state.pendingUnits.push(unit);
+      pendingUnitIndex.set(unitHash, unit);
     }
-    mergeUnitPattern(state.patterns, patternIndex, unit);
-    state.processedUnits += 1;
+    consumePendingUnitRow(unit, row);
+  });
+
+  if (isFinal) {
+    const shelterAreaMedians = buildShelterAreaMedians(state.pendingUnits);
+    state.pendingUnits.forEach((unit) => {
+      seenUnitHashes.add(unit.key);
+      if (!unit.exclusiveArea || !matchesPendingUnitComponent(unit, apartmentComponents)) {
+        state.filteredRows += unit.rowCount;
+        state.skippedUnits += 1;
+        return;
+      }
+      const residentialCommonArea = normalizeResidentialCommonArea(
+        unit.exclusiveArea,
+        unit.residentialCommonArea,
+        unit.shelterCommonAreas,
+        shelterAreaMedians.get(exclusiveAreaMedianKey(unit.exclusiveArea))
+      );
+      if (residentialCommonArea <= 0) {
+        state.skippedUnits += 1;
+        return;
+      }
+      mergeUnitPattern(state.patterns, patternIndex, {
+        dong: unit.exclusiveDongName || unit.dongNames[0] || "",
+        exclusiveArea: round(unit.exclusiveArea, 4),
+        residentialCommonArea: round(residentialCommonArea, 4),
+        supplyArea: round(unit.exclusiveArea + residentialCommonArea, 4),
+        unitCount: 1,
+        components: [],
+      });
+      state.processedUnits += 1;
+    });
+    state.pendingUnits = [];
   }
 
   state.seenUnitHashes = [...seenUnitHashes];
-  state.carryRows = isFinal || !groups.length ? [] : groups[groups.length - 1];
+  state.carryRows = [];
   state.sourceRows += sourceRows.length;
   state.processedRows += sourceRows.length;
   return state;
+}
+
+function createPendingUnit(key) {
+  return {
+    key,
+    rowCount: 0,
+    buildingNames: [],
+    dongNames: [],
+    exclusiveArea: 0,
+    exclusiveDongName: "",
+    residentialCommonArea: 0,
+    shelterCommonAreas: [],
+  };
+}
+
+function consumePendingUnitRow(unit, row) {
+  unit.rowCount += 1;
+  addUniqueValue(unit.buildingNames, String(row?.bldNm || "").trim());
+  addUniqueValue(unit.dongNames, String(row?.dongNm || "").trim());
+  const usage = normalizeText(row?.exposPubuseGbCdNm);
+  const area = toArea(row?.area);
+  if (
+    usage === "전유" &&
+    area > 10 &&
+    isApartmentExclusivePurpose(rowPurpose(row)) &&
+    area > unit.exclusiveArea
+  ) {
+    unit.exclusiveArea = area;
+    unit.exclusiveDongName = String(row?.dongNm || "").trim();
+  }
+  if (
+    usage === "공용" &&
+    area > 0 &&
+    isResidentialCommonPurpose(rowPurpose(row))
+  ) {
+    unit.residentialCommonArea += area;
+    if (normalizeText(rowPurpose(row)).includes("대피소")) {
+      unit.shelterCommonAreas.push(area);
+    }
+  }
+}
+
+function buildShelterAreaMedians(units) {
+  const valuesByExclusiveArea = new Map();
+  units.forEach((unit) => {
+    const exclusiveArea = Number(unit?.exclusiveArea) || 0;
+    if (exclusiveArea <= 0) return;
+    const key = exclusiveAreaMedianKey(exclusiveArea);
+    const values = valuesByExclusiveArea.get(key) || [];
+    (unit.shelterCommonAreas || []).forEach((areaValue) => {
+      const area = Number(areaValue) || 0;
+      if (
+        area > 0 &&
+        area / exclusiveArea < MAX_SHELTER_COMPONENT_TO_EXCLUSIVE_RATIO
+      ) {
+        values.push(area);
+      }
+    });
+    if (values.length) valuesByExclusiveArea.set(key, values);
+  });
+  return new Map(
+    [...valuesByExclusiveArea].map(([key, values]) => [key, median(values)])
+  );
+}
+
+function normalizeResidentialCommonArea(
+  exclusiveArea,
+  residentialCommonArea,
+  shelterCommonAreas = [],
+  shelterAreaMedian = 0
+) {
+  let normalizedArea = Number(residentialCommonArea) || 0;
+  (shelterCommonAreas || []).forEach((areaValue) => {
+    const area = Number(areaValue) || 0;
+    if (
+      exclusiveArea > 0 &&
+      area / exclusiveArea >= MAX_SHELTER_COMPONENT_TO_EXCLUSIVE_RATIO
+    ) {
+      normalizedArea -= area;
+      if (shelterAreaMedian > 0) normalizedArea += shelterAreaMedian;
+    }
+  });
+  return Math.max(0, normalizedArea);
+}
+
+function exclusiveAreaMedianKey(value) {
+  return (Number(value) || 0).toFixed(2);
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function matchesPendingUnitComponent(unit, apartmentComponents) {
+  const rows = [
+    ...unit.buildingNames.map((bldNm) => ({ bldNm, dongNm: "" })),
+    ...unit.dongNames.map((dongNm) => ({ bldNm: "", dongNm })),
+  ];
+  return matchesApartmentComponent(rows, apartmentComponents);
+}
+
+function addUniqueValue(values, value) {
+  if (value && !values.includes(value)) values.push(value);
 }
 
 export function buildSupplyProfile({
@@ -422,6 +557,9 @@ function normalizeCollectionState(inputState) {
   const state = inputState && typeof inputState === "object" ? inputState : createCollectionState();
   return {
     carryRows: Array.isArray(state.carryRows) ? state.carryRows.map(compactAreaRow) : [],
+    pendingUnits: Array.isArray(state.pendingUnits)
+      ? state.pendingUnits.map(normalizePendingUnit)
+      : [],
     patterns: Array.isArray(state.patterns) ? state.patterns.map(compactStoredPattern) : [],
     processedRows: Number(state.processedRows) || 0,
     sourceRows: Number(state.sourceRows) || Number(state.processedRows) || 0,
@@ -433,23 +571,26 @@ function normalizeCollectionState(inputState) {
   };
 }
 
-function groupContiguousRows(rows) {
-  const groups = [];
-  let currentKey = "";
-  let currentRows = [];
+function normalizePendingUnit(unit) {
+  return {
+    key: String(unit?.key || ""),
+    rowCount: Math.max(0, Math.round(Number(unit?.rowCount) || 0)),
+    buildingNames: uniqueStrings(unit?.buildingNames),
+    dongNames: uniqueStrings(unit?.dongNames),
+    exclusiveArea: toArea(unit?.exclusiveArea),
+    exclusiveDongName: String(unit?.exclusiveDongName || "").trim(),
+    residentialCommonArea: toArea(unit?.residentialCommonArea),
+    shelterCommonAreas: (Array.isArray(unit?.shelterCommonAreas)
+      ? unit.shelterCommonAreas
+      : []
+    )
+      .map(toArea)
+      .filter((area) => area > 0),
+  };
+}
 
-  rows.forEach((row) => {
-    const key = unitRowKey(row);
-    if (!key) return;
-    if (currentRows.length && key !== currentKey) {
-      groups.push(currentRows);
-      currentRows = [];
-    }
-    currentKey = key;
-    currentRows.push(row);
-  });
-  if (currentRows.length) groups.push(currentRows);
-  return groups;
+function uniqueStrings(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
 function unitRowKey(row) {
@@ -472,20 +613,6 @@ function compactAreaRow(row) {
   };
 }
 
-function isSelectedApartmentUnit(rows, apartmentComponents) {
-  const exclusiveRows = rows.filter(
-    (row) => normalizeText(row.exposPubuseGbCdNm) === "전유"
-  );
-  if (
-    !exclusiveRows.some((row) =>
-      isApartmentExclusivePurpose(rowPurpose(row))
-    )
-  ) {
-    return false;
-  }
-  return matchesApartmentComponent(rows, apartmentComponents);
-}
-
 function normalizeApartmentComponents(components) {
   return (Array.isArray(components) ? components : [])
     .map((component) => ({
@@ -505,44 +632,6 @@ function normalizeComponentName(value) {
     .replace(/공동주택/g, "")
     .replace(/주상복합/g, "")
     .replace(/아파트/g, "");
-}
-
-function buildUnitPattern(rows) {
-  if (!rows.length) return null;
-  const exclusiveRows = rows.filter((row) => normalizeText(row.exposPubuseGbCdNm) === "전유");
-  const apartmentRows = exclusiveRows
-    .filter((row) => isApartmentExclusivePurpose(rowPurpose(row)))
-    .filter((row) => toArea(row.area) > 10)
-    .sort((a, b) => toArea(b.area) - toArea(a.area));
-  const exclusiveRow = apartmentRows[0];
-  if (!exclusiveRow) return null;
-
-  const exclusiveArea = toArea(exclusiveRow.area);
-  const commonComponents = rows
-    .filter((row) => normalizeText(row.exposPubuseGbCdNm) === "공용")
-    .map((row) => {
-      const purpose = rowPurpose(row);
-      const area = toArea(row.area);
-      return {
-        purpose,
-        area,
-        included: area > 0 && isResidentialCommonPurpose(purpose),
-      };
-    })
-    .filter((component) => component.area >= 0);
-  const residentialCommonArea = commonComponents
-    .filter((component) => component.included)
-    .reduce((sum, component) => sum + component.area, 0);
-  if (residentialCommonArea <= 0) return null;
-
-  return {
-    dong: String(exclusiveRow.dongNm || rows[0]?.dongNm || "").trim(),
-    exclusiveArea: round(exclusiveArea, 4),
-    residentialCommonArea: round(residentialCommonArea, 4),
-    supplyArea: round(exclusiveArea + residentialCommonArea, 4),
-    unitCount: 1,
-    components: commonComponents,
-  };
 }
 
 function mergeUnitPattern(patterns, patternIndex, unit) {

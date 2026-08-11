@@ -15,6 +15,7 @@ test("주거공용과 기타공용 용도를 구분한다", () => {
   assert.equal(isResidentialCommonPurpose("벽체"), true);
   assert.equal(isResidentialCommonPurpose("부대시설 계단실통로"), true);
   assert.equal(isResidentialCommonPurpose("대피소 지층대피소"), true);
+  assert.equal(isResidentialCommonPurpose("비상계단실"), true);
   assert.equal(isResidentialCommonPurpose("지하주차장"), false);
   assert.equal(isResidentialCommonPurpose("커뮤니티 로비"), false);
   assert.equal(
@@ -135,6 +136,7 @@ test("페이지 경계를 넘는 세대 행을 한 세대로 합친다", () => {
     row("unit-1", "공용", 20, "벽체", "", "101동"),
   ]);
   assert.equal(state.processedUnits, 0);
+  assert.equal(state.pendingUnits.length, 1);
 
   state = consumeBuildingAreaRows(
     state,
@@ -151,6 +153,49 @@ test("페이지 경계를 넘는 세대 행을 한 세대로 합친다", () => {
   assert.equal(state.patterns.length, 2);
   assert.equal(state.patterns[0].supplyArea, 112.85);
   assert.equal(state.patterns[1].supplyArea, 111.72);
+});
+
+test("여러 페이지에 흩어진 세대 행을 해시 키로 끝까지 합친다", () => {
+  let state = consumeBuildingAreaRows(createCollectionState(), [
+    row("unit-z", "전유", 84.95, "아파트", "", "101동"),
+    row("unit-z", "공용", 26.77, "계단실", "", "101동"),
+    row("unit-a", "전유", 59.95, "아파트", "", "102동"),
+  ]);
+
+  assert.equal(state.processedUnits, 0);
+  assert.equal(state.pendingUnits.length, 2);
+
+  state = consumeBuildingAreaRows(
+    state,
+    [row("unit-a", "공용", 22.05, "계단실", "", "102동")],
+    { isFinal: true }
+  );
+
+  assert.equal(state.processedUnits, 2);
+  assert.deepEqual(
+    state.patterns.map((item) => item.supplyArea).sort((a, b) => a - b),
+    [82, 111.72]
+  );
+});
+
+test("비정상적으로 큰 대피소 면적은 같은 전용면적의 정상 중앙값으로 보정한다", () => {
+  const state = consumeBuildingAreaRows(
+    createCollectionState(),
+    [
+      row("unit-1", "전유", 84.92, "아파트", "", "101동"),
+      row("unit-1", "공용", 16.56, "계단,승강기,복도", "", "101동"),
+      row("unit-1", "공용", 8.4, "부대시설 지하대피소", "", "101동"),
+      row("unit-2", "전유", 84.92, "아파트", "", "101동"),
+      row("unit-2", "공용", 16.56, "계단,승강기,복도", "", "101동"),
+      row("unit-2", "공용", 84, "부대시설 지하대피소", "", "101동"),
+    ],
+    { isFinal: true }
+  );
+
+  assert.equal(state.processedUnits, 2);
+  assert.equal(state.patterns.length, 1);
+  assert.equal(state.patterns[0].unitCount, 2);
+  assert.equal(state.patterns[0].supplyArea, 109.88);
 });
 
 test("84타입 공급평당가를 공급면적별 세대수로 가중한다", () => {
@@ -285,7 +330,7 @@ test("the same building-register PK is separated by dong and unit number", () =>
   assert.equal(state.seenUnitHashes.length, 2);
 });
 
-test("unfinished page rows are persisted with calculation fields only", () => {
+test("unfinished page units are persisted with calculation fields only", () => {
   const rows = [
     {
       ...row("building-pk", "전유", 84.95, "아파트", "", "101동"),
@@ -301,8 +346,8 @@ test("unfinished page rows are persisted with calculation fields only", () => {
 
   const state = consumeBuildingAreaRows(createCollectionState(), rows);
 
-  assert.equal(state.carryRows.length, 2);
-  assert.equal("unusedLargeField" in state.carryRows[0], false);
+  assert.equal(state.pendingUnits.length, 1);
+  assert.equal("unusedLargeField" in state.pendingUnits[0], false);
   assert.ok(JSON.stringify(state).length < 5000);
 });
 
