@@ -9,7 +9,12 @@ import {
   requireServiceKey,
 } from "../_shared/molit.js";
 
-const ALLOWED_OPERATIONS = new Set(["getBrRecapTitleInfo", "getBrTitleInfo"]);
+const ALLOWED_OPERATIONS = new Set([
+  "getBrRecapTitleInfo",
+  "getBrTitleInfo",
+  "getBrAtchJibunInfo",
+  "getBrExposPubuseAreaInfo",
+]);
 
 export async function onRequestGet({ request, env }) {
   try {
@@ -24,7 +29,11 @@ export async function onRequestGet({ request, env }) {
       pageNo: getSearchParam(request, "pageNo", "1"),
       numOfRows: getSearchParam(request, "numOfRows", "100"),
     };
-    assertRequired({ operation, sigunguCd: params.sigunguCd, bjdongCd: params.bjdongCd, bun: params.bun, ji: params.ji });
+    assertRequired({
+      operation,
+      sigunguCd: params.sigunguCd,
+      bjdongCd: params.bjdongCd,
+    });
     if (!ALLOWED_OPERATIONS.has(operation)) {
       return errorJson("Unsupported building ledger operation.", 400);
     }

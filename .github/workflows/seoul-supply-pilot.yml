@@ -1,0 +1,210 @@
+name: Seoul supply-area pilot
+
+on:
+  push:
+    branches:
+      - feature/2026-07-30-seoul-pilot-batch
+    paths:
+      - ".github/workflows/seoul-supply-pilot.yml"
+      - "functions/api/supply-profile.js"
+      - "functions/_shared/supply-area.js"
+      - "functions/_shared/permit-supply.js"
+      - "functions/_shared/building-match.js"
+      - "functions/_shared/molit.js"
+      - "migrations/**"
+      - "scripts/**"
+      - "tests/**"
+      - "package.json"
+  workflow_dispatch:
+    inputs:
+      approval_from:
+        description: "준공일 시작일(YYYYMMDD)"
+        required: true
+        default: "20200101"
+        type: string
+      approval_to:
+        description: "준공일 종료일(YYYYMMDD)"
+        required: true
+        default: "20291231"
+        type: string
+      mode:
+        description: "실행 단계"
+        required: true
+        default: "catalog-and-collect"
+        type: choice
+        options:
+          - catalog-and-collect
+          - catalog
+          - collect
+          - progress
+          - reset
+      source_strategy:
+        description: "Supply profile primary source"
+        required: true
+        default: "building-ledger-first"
+        type: choice
+        options:
+          - building-ledger-first
+          - permit-first
+      sample_complex_names:
+        description: "Optional comma-separated exact complex names"
+        required: false
+        default: ""
+        type: string
+      reset_confirmation:
+        description: "For reset mode, enter RESET_SUPPLY_CALCULATIONS"
+        required: false
+        default: ""
+        type: string
+      catalog_strategy:
+        description: "단지 카탈로그 방식"
+        required: true
+        default: "master"
+        type: choice
+        options:
+          - master
+          - decade
+      max_complexes:
+        description: "이번 실행에서 완료할 공급면적 단지 수"
+        required: true
+        default: "500"
+        type: string
+      max_attempts:
+        description: "완료 목표를 위해 탐색할 최대 단지 수"
+        required: true
+        default: "500"
+        type: string
+      max_minutes:
+        description: "최대 실행 시간(분)"
+        required: true
+        default: "330"
+        type: string
+      max_api_calls:
+        description: "공공데이터 API 최대 호출 수"
+        required: true
+        default: "9000"
+        type: string
+      max_transport_failures:
+        description: "연속 API 연결 실패 시 배치 중단 기준"
+        required: true
+        default: "2"
+        type: string
+      retry_failed:
+        description: "영구 실패 단지도 다시 시도"
+        required: true
+        default: false
+        type: boolean
+      retry_waiting:
+        description: "Retry paused records without waiting for backoff"
+        required: true
+        default: false
+        type: boolean
+      refresh_catalog:
+        description: "K-apt와 실거래 자료로 대상 목록을 다시 검증"
+        required: true
+        default: false
+        type: boolean
+      ledger_fallback:
+        description: "인허가 실패 시 기존 건축물대장 전체 수집 사용"
+        required: true
+        default: true
+        type: boolean
+
+      runner_os:
+        description: "GitHub Actions runner OS"
+        required: true
+        default: ubuntu-latest
+        type: choice
+        options:
+          - ubuntu-latest
+          - windows-latest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.mode == 'progress' && format('seoul-supply-progress-{0}', github.run_id) || 'seoul-supply-area-pilot' }}
+  cancel-in-progress: false
+
+jobs:
+  run-pilot:
+    runs-on: ${{ inputs.runner_os || 'ubuntu-latest' }}
+    timeout-minutes: 330
+    env:
+      MOLIT_SERVICE_KEY: ${{ secrets.MOLIT_SERVICE_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      PILOT_APPROVAL_FROM: ${{ inputs.approval_from || '20200101' }}
+      PILOT_APPROVAL_TO: ${{ inputs.approval_to || '20291231' }}
+      PILOT_MODE: ${{ inputs.mode || 'catalog-and-collect' }}
+      PILOT_MAX_COMPLEXES: ${{ inputs.max_complexes || '500' }}
+      PILOT_MAX_ATTEMPTS: ${{ inputs.max_attempts || '500' }}
+      PILOT_MAX_MINUTES: ${{ inputs.max_minutes || '330' }}
+      PILOT_MAX_API_CALLS: ${{ inputs.max_api_calls || '9000' }}
+      PILOT_MAX_CONSECUTIVE_TRANSPORT_FAILURES: ${{ inputs.max_transport_failures || '2' }}
+      PILOT_RETRY_FAILED: ${{ inputs.retry_failed && '1' || '0' }}
+      PILOT_RETRY_WAITING: ${{ inputs.retry_waiting && '1' || '0' }}
+      PILOT_REFRESH_CATALOG: ${{ inputs.refresh_catalog && '1' || '0' }}
+      PILOT_ENABLE_LEDGER_FALLBACK: ${{ inputs.ledger_fallback == false && github.event_name == 'workflow_dispatch' && '0' || '1' }}
+      PILOT_CATALOG_STRATEGY: ${{ inputs.catalog_strategy || 'master' }}
+      PILOT_SOURCE_STRATEGY: ${{ inputs.source_strategy || 'building-ledger-first' }}
+      PILOT_COMPLEX_NAMES: ${{ inputs.sample_complex_names || '' }}
+      PILOT_REPORT_PATH: seoul-pilot-report.json
+      PILOT_REPORT_HTML_PATH: seoul-pilot-report.html
+      PILOT_REPORT_CSV_PATH: seoul-pilot-report.csv
+      SUPPLY_PROGRESS_REPORT_PATH: supply-progress-report.json
+      SUPPLY_RESET_CONFIRMATION: ${{ inputs.reset_confirmation || '' }}
+      SUPPLY_RESET_REPORT_PATH: supply-reset-report.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run Seoul pilot
+        if: inputs.mode != 'progress' && inputs.mode != 'reset'
+        run: npm run batch:seoul-pilot
+
+      - name: Upload pilot report
+        if: always() && inputs.mode != 'progress' && inputs.mode != 'reset'
+        uses: actions/upload-artifact@v4
+        with:
+          name: seoul-supply-${{ inputs.approval_from || '20200101' }}-${{ inputs.approval_to || '20291231' }}-${{ github.run_number }}
+          path: |
+            seoul-pilot-report.json
+            seoul-pilot-report.html
+            seoul-pilot-report.csv
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Reset supply calculations
+        if: inputs.mode == 'reset'
+        run: npm run reset:supply-data
+
+      - name: Upload reset report
+        if: inputs.mode == 'reset'
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-reset-${{ github.run_number }}
+          path: supply-reset-report.json
+          retention-days: 30
+
+      - name: Read D1 supply progress
+        if: inputs.mode == 'progress'
+        run: npm run report:supply-progress
+
+      - name: Upload progress report
+        if: inputs.mode == 'progress'
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-progress-${{ github.run_number }}
+          path: supply-progress-report.json
+          retention-days: 14

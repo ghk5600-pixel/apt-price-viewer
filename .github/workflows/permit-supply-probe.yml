@@ -1,0 +1,73 @@
+name: Permit supply-area probe
+
+on:
+  push:
+    branches:
+      - feature/2026-08-05-permit-supply-batch
+    paths:
+      - ".github/workflows/permit-supply-probe.yml"
+      - "scripts/probe-permit-api.mjs"
+  workflow_dispatch:
+    inputs:
+      sigungu_cd:
+        description: "시군구코드 5자리"
+        required: true
+        default: "11740"
+        type: string
+      bjdong_cd:
+        description: "법정동코드 5자리"
+        required: true
+        default: "10300"
+        type: string
+      bun:
+        description: "본번 4자리"
+        required: true
+        default: "0514"
+        type: string
+      ji:
+        description: "부번 4자리"
+        required: true
+        default: "0000"
+        type: string
+      omit_lot:
+        description: "지번을 생략하고 법정동 전체 기본개요 조회"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MOLIT_SERVICE_KEY: ${{ secrets.MOLIT_SERVICE_KEY }}
+      PERMIT_PROBE_SIGUNGU_CD: ${{ inputs.sigungu_cd || '11740' }}
+      PERMIT_PROBE_BJDONG_CD: ${{ inputs.bjdong_cd || '10300' }}
+      PERMIT_PROBE_BUN: ${{ inputs.bun || '0514' }}
+      PERMIT_PROBE_JI: ${{ inputs.ji || '0000' }}
+      PERMIT_PROBE_OMIT_LOT: ${{ inputs.omit_lot && '1' || '0' }}
+      PERMIT_PROBE_REPORT_PATH: permit-probe-report.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Probe permit APIs
+        run: node scripts/probe-permit-api.mjs
+
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: permit-supply-probe-${{ github.run_number }}
+          path: permit-probe-report.json
+          if-no-files-found: warn
+          retention-days: 7

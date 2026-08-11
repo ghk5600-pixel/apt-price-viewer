@@ -42,13 +42,62 @@ export function assertRequired(params) {
 export async function fetchJsonApi(url) {
   const response = await fetch(url.toString(), {
     headers: { accept: "application/json, text/plain, */*" },
+    signal: AbortSignal.timeout(30000),
   });
   if (!response.ok) {
     throw new Error(`MOLIT API responded with ${response.status}.`);
   }
   const text = await response.text();
   if (!text.trim()) return {};
-  return JSON.parse(text);
+  return parseJsonPreservingLongIntegers(text);
+}
+
+export function parseJsonPreservingLongIntegers(text) {
+  const source = String(text || "");
+  let normalized = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      normalized += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      normalized += character;
+      continue;
+    }
+
+    if (character === "-" || /\d/.test(character)) {
+      const match = source.slice(index).match(
+        /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/
+      );
+      if (match) {
+        const token = match[0];
+        const digits = token.replace(/^-/, "");
+        normalized +=
+          !/[.eE]/.test(token) && digits.length >= 16
+            ? `"${token}"`
+            : token;
+        index += token.length - 1;
+        continue;
+      }
+    }
+
+    normalized += character;
+  }
+
+  return JSON.parse(normalized);
 }
 
 export async function fetchTextApi(url) {
@@ -87,13 +136,20 @@ export function buildBuildingHubUrl({ serviceKey, operation, params }) {
   url.searchParams.set("serviceKey", serviceKey);
   url.searchParams.set("sigunguCd", params.sigunguCd);
   url.searchParams.set("bjdongCd", params.bjdongCd);
-  url.searchParams.set("platGbCd", params.platGbCd || "0");
-  url.searchParams.set("bun", params.bun);
-  url.searchParams.set("ji", params.ji);
+  setOptionalSearchParam(url, "platGbCd", params.platGbCd);
+  setOptionalSearchParam(url, "bun", params.bun);
+  setOptionalSearchParam(url, "ji", params.ji);
+  setOptionalSearchParam(url, "startDate", params.startDate);
+  setOptionalSearchParam(url, "endDate", params.endDate);
   url.searchParams.set("_type", "json");
   url.searchParams.set("numOfRows", params.numOfRows || "100");
   url.searchParams.set("pageNo", params.pageNo || "1");
   return url;
+}
+
+function setOptionalSearchParam(url, key, value) {
+  const normalized = String(value ?? "").trim();
+  if (normalized) url.searchParams.set(key, normalized);
 }
 
 export function buildRtmsUrl({ serviceKey, lawdCd, dealYmd, pageNo = "1", numOfRows = "1000" }) {
