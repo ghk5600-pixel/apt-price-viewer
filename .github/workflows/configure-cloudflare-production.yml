@@ -1,0 +1,57 @@
+name: Configure Cloudflare production D1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      CLOUDFLARE_PAGES_PROJECT: apt-price-viewer
+
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_D1_DATABASE_ID"
+
+      - name: Bind SUPPLY_DB to Production
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          api_url="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${CLOUDFLARE_PAGES_PROJECT}"
+          payload=$(jq -n --arg database_id "$CLOUDFLARE_D1_DATABASE_ID" '{
+            deployment_configs: {
+              production: {
+                d1_databases: {
+                  SUPPLY_DB: { id: $database_id }
+                }
+              }
+            }
+          }')
+
+          curl --silent --show-error --fail-with-body \
+            --request PATCH \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$payload" \
+            "$api_url" >/dev/null
+
+          project=$(curl --silent --show-error --fail-with-body \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "$api_url")
+
+          configured_id=$(jq -r '.result.deployment_configs.production.d1_databases.SUPPLY_DB.id // empty' <<<"$project")
+          test "$configured_id" = "$CLOUDFLARE_D1_DATABASE_ID"
+          echo "Production SUPPLY_DB binding verified."
