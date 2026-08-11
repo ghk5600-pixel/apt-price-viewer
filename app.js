@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.08.11-01-rc.6";
+const APP_VERSION = "v2026.08.11-01-rc.7";
 const APP_UPDATED_AT = "2026-08-11";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
@@ -2676,6 +2676,7 @@ function renderComparison() {
     ${rows
       .map(({ complex, rank, txs, metrics }) => {
         const isSelected = state.selectedComplexId === complex.id;
+        const supplyStatus = formatSupplyProfileShortStatus(complex, metrics.latest);
         return `
           <article class="compare-row ${isSelected ? "active" : ""}" data-compare-id="${complex.id}">
             <button
@@ -2697,7 +2698,7 @@ function renderComparison() {
               </span>
               <span class="compare-cell">
                 <strong>${metrics.latest?.ppy ? `${formatNumber(metrics.latest.ppy)}만` : "-"}</strong>
-                <small>${formatSupplyProfileShortStatus(complex, metrics.latest)}</small>
+                ${supplyStatus ? `<small>${supplyStatus}</small>` : ""}
               </span>
               <span class="compare-cell">
                 <strong>${txs.length}건</strong>
@@ -3216,7 +3217,7 @@ function formatSupplyProfileMessage(complex, transaction) {
 
 function formatSupplyProfileShortStatus(complex, transaction) {
   if (transaction?.ppyBasis === "supply-dong-weighted") return "동 기준 가중";
-  if (transaction?.ppyBasis === "supply-complex-weighted") return "단지 가중";
+  if (transaction?.ppyBasis === "supply-complex-weighted") return "";
   if (complex?.supplyProfileStatus === "loading") return `${complex.supplyProfileProgress || 0}% 처리`;
   if (complex?.supplyProfileStatus === "error") {
     const labels = {
