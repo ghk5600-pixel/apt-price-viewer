@@ -29,7 +29,7 @@ for (const candidate of candidates) {
 }
 
 const report = {
-  version: "v2026.08.11-01-rc.3",
+  version: "v2026.08.11-01-rc.4",
   calculationVersion: SUPPLY_CALCULATION_VERSION,
   baseUrl,
   startedAt: results[0]?.startedAt || new Date().toISOString(),

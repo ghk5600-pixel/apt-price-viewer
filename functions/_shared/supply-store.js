@@ -5,7 +5,7 @@ const USAGE_TABLE_NAME = "supply_profile_usage";
 
 export async function createSupplyProfileStore(env) {
   if (env?.SUPPLY_DB) {
-    await ensureD1Schema(env.SUPPLY_DB);
+    await ensureD1SchemaOnce(env.SUPPLY_DB);
     return createD1Store(env.SUPPLY_DB);
   }
   if (typeof caches !== "undefined" && caches.default) {
@@ -14,9 +14,15 @@ export async function createSupplyProfileStore(env) {
   return createMemoryStore();
 }
 
+async function ensureD1SchemaOnce(db) {
+  if (globalThis.__supplyProfileD1SchemaReady) return;
+  await ensureD1Schema(db);
+  globalThis.__supplyProfileD1SchemaReady = true;
+}
+
 async function ensureD1Schema(db) {
-  await db
-    .prepare(
+  const statements = [
+    db.prepare(
       `CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
         complex_key TEXT PRIMARY KEY,
         calculation_version TEXT NOT NULL,
@@ -24,10 +30,8 @@ async function ensureD1Schema(db) {
         record_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )`
-    )
-    .run();
-  await db
-    .prepare(
+    ),
+    db.prepare(
       `CREATE TABLE IF NOT EXISTS ${USAGE_TABLE_NAME} (
         complex_key TEXT PRIMARY KEY,
         request_count INTEGER NOT NULL DEFAULT 0,
@@ -41,15 +45,20 @@ async function ensureD1Schema(db) {
         last_registered_at TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL
       )`
-    )
-    .run();
-  await db
-    .prepare(
+    ),
+    db.prepare(
       `CREATE INDEX IF NOT EXISTS idx_supply_profile_usage_priority
        ON ${USAGE_TABLE_NAME}
-         (registration_count DESC, request_count DESC, last_requested_at DESC)`
-    )
-    .run();
+          (registration_count DESC, request_count DESC, last_requested_at DESC)`
+    ),
+  ];
+  if (typeof db.batch === "function") {
+    await db.batch(statements);
+    return;
+  }
+  for (const statement of statements) {
+    await statement.run();
+  }
 }
 
 function createD1Store(db) {

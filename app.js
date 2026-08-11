@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.08.11-01-rc.3";
+const APP_VERSION = "v2026.08.11-01-rc.4";
 const APP_UPDATED_AT = "2026-08-11";
 const REFERENCE_MONTH = "2026-07";
 const MAX_FAVORITES = 20;
@@ -18,7 +18,7 @@ const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
 const DEFAULT_KAKAO_JAVASCRIPT_KEY = "f1381fcba950abff23056942bd19d544";
 const ADMIN_QUERY_PARAM = "admin";
 const SUPPLY_CALCULATION_VERSION = "supply-model-v14-on-demand-d1";
-const SUPPLY_PROFILE_POLL_DELAY = 750;
+const SUPPLY_PROFILE_POLL_DELAY = 200;
 const SUPPLY_PROFILE_MAX_POLLS = 500;
 
 const AREA_GROUPS = [
@@ -908,6 +908,7 @@ function createComplexFromKakaoPlace(place) {
     supplyProfileStatus: "idle",
     supplyProfileProgress: 0,
     supplyProfileMessage: "공급면적 조회 전",
+    supplyProfileErrorCode: "",
     supplyProfile: null,
     lastSupplyProfileSync: "",
     lotNumber: parseLotNumber(place.address_name || address),
@@ -969,6 +970,7 @@ function createComplexFromAptListCandidate(candidate) {
     supplyProfileStatus: "idle",
     supplyProfileProgress: 0,
     supplyProfileMessage: "공급면적 조회 전",
+    supplyProfileErrorCode: "",
     supplyProfile: null,
     lastSupplyProfileSync: "",
     lotNumber: candidate.lotNumber || parseLotNumber(candidate.jibunAddress || address),
@@ -1598,6 +1600,8 @@ async function refreshSupplyProfileForComplex(complexId) {
     .catch((error) => {
       complex.supplyProfileStatus = "error";
       complex.supplyProfileMessage = error.message || "공급면적 프로필 조회 실패";
+      complex.supplyProfileErrorCode =
+        complex.supplyProfileErrorCode || error.code || "CLIENT_REQUEST_FAILED";
       saveCustomComplexes();
       render();
     })
@@ -1631,6 +1635,7 @@ async function pollSupplyProfile(complex, params, options = {}) {
       complex.supplyProfileStatus = "ready";
       complex.supplyProfileProgress = 100;
       complex.supplyProfileMessage = formatSupplyProfileReadyMessage(payload);
+      complex.supplyProfileErrorCode = "";
       complex.lastSupplyProfileSync = payload.fetchedAt || new Date().toISOString();
       applySupplyProfileToTransactions(complex);
       saveCustomComplexes();
@@ -1640,6 +1645,8 @@ async function pollSupplyProfile(complex, params, options = {}) {
     }
 
     if (payload.status === "failed" || payload.status === "upstream-pending") {
+      complex.supplyProfileErrorCode =
+        payload.errorDetails?.resultCode || payload.status || "SUPPLY_PROFILE_FAILED";
       const errorCode = payload.errorDetails?.resultCode
         ? ` (${payload.errorDetails.resultCode})`
         : "";
@@ -3151,8 +3158,19 @@ function formatSupplyProfileShortStatus(complex, transaction) {
   if (transaction?.ppyBasis === "supply-complex-weighted") return "단지 가중";
   if (complex?.supplyProfileStatus === "loading") return `${complex.supplyProfileProgress || 0}% 처리`;
   if (complex?.supplyProfileStatus === "error") {
+    const labels = {
+      HOUSEHOLD_COUNT_MISMATCH: "세대수 불일치",
+      ABNORMAL_SUPPLY_AREA: "면적 검증 실패",
+      NO_RESIDENTIAL_UNITS: "아파트 세대 없음",
+      LEDGER_MATCH_NOT_FOUND: "대장 매칭 실패",
+      TIMEOUT: "응답 지연",
+      NETWORK_ERROR: "API 연결 오류",
+    };
+    if (labels[complex.supplyProfileErrorCode]) {
+      return labels[complex.supplyProfileErrorCode];
+    }
     const failedPage = String(complex.supplyProfileMessage || "").match(/(\d+)페이지/);
-    return failedPage ? `${failedPage[1]}페이지 실패` : "조회 실패";
+    return failedPage ? `${failedPage[1]}페이지 오류` : "조회 실패";
   }
   return "계산 전";
 }
@@ -3311,6 +3329,7 @@ function loadCustomComplexes() {
             : "idle",
         supplyProfileProgress: Number(complex.supplyProfileProgress) || 0,
         supplyProfileMessage: complex.supplyProfileMessage || "공급면적 조회 전",
+        supplyProfileErrorCode: complex.supplyProfileErrorCode || "",
         supplyProfile:
           complex.supplyProfile?.calculationVersion === SUPPLY_CALCULATION_VERSION
             ? complex.supplyProfile

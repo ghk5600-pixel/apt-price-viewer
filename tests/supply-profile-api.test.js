@@ -54,6 +54,40 @@ test("1000행 페이지를 우선 선택하고 한 페이지씩 순차 저장한
   }
 });
 
+test("configured page batch advances several ledger pages in one request", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedPages = [];
+  globalThis.__supplyProfileRecords = new Map();
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    if (!isAreaRequest(parsed)) return discoveryResponse();
+    const pageNo = Number(parsed.searchParams.get("pageNo"));
+    const numOfRows = Number(parsed.searchParams.get("numOfRows"));
+    requestedPages.push(pageNo);
+    return successResponse(
+      [
+        row(`batch-unit-${pageNo}`, "전유", 84.95, "아파트"),
+        row(`batch-unit-${pageNo}`, "공용", 26.77, "계단실"),
+      ],
+      2001,
+      numOfRows
+    );
+  };
+
+  try {
+    const { response, payload } = await callApi(
+      requestUrl("batched-page-complex", { expectedHouseholds: 3 }),
+      { SUPPLY_PAGES_PER_REQUEST: "3" }
+    );
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "ready");
+    assert.equal(payload.profile.unitCount, 3);
+    assert.deepEqual(requestedPages, [1, 2, 3]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("1000행 요청이 실패하면 500행으로 자동 하향한다", async () => {
   const originalFetch = globalThis.fetch;
   const requestedSizes = [];
@@ -559,10 +593,14 @@ function requestUrl(
   return url.toString();
 }
 
-async function callApi(url) {
+async function callApi(url, env = {}) {
   const response = await onRequestGet({
     request: new Request(url),
-    env: { MOLIT_SERVICE_KEY: "test" },
+    env: {
+      MOLIT_SERVICE_KEY: "test",
+      SUPPLY_PAGES_PER_REQUEST: "1",
+      ...env,
+    },
   });
   return { response, payload: await response.json() };
 }

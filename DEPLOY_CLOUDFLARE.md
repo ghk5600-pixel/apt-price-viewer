@@ -114,6 +114,10 @@ https://<Preview 주소>/api/debug-env
 `MOLIT_SERVICE_KEY` 확인과 건축HUB 호출보다 먼저 반환됩니다. 따라서 한 사용자가
 계산을 완료한 단지는 이후 모든 사용자가 같은 K-apt 코드로 즉시 사용할 수 있습니다.
 
+`v2026.08.11-01-rc.4`부터 최초 계산은 건축HUB 페이지를 동시에 호출하지 않고,
+한 번의 Pages Function 요청 안에서 최대 8페이지를 순차 처리합니다. 대규모 단지의
+브라우저 폴링과 D1 왕복 횟수를 줄이면서 기존의 순차 수집 안정성은 유지합니다.
+
 관심단지 등록 횟수가 높은 미완료 단지는 GitHub Actions의
 `Popular supply profile precompute` 작업이 매일 Cloudflare Pages Function을 통해
 이어 계산합니다. 이 작업은 기존 GitHub Secrets의 `CLOUDFLARE_ACCOUNT_ID`,

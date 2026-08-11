@@ -28,6 +28,9 @@ const COLLECTION_PROTOCOL_VERSION =
 const PAGE_SIZE_CANDIDATES = [1000, 500, 100];
 const LEASE_MILLISECONDS = 45_000;
 const PAGE_FETCH_TIMEOUT_MILLISECONDS = 20_000;
+const DEFAULT_PAGES_PER_REQUEST = 8;
+const MAX_PAGES_PER_REQUEST = 12;
+const COLLECTION_BATCH_BUDGET_MILLISECONDS = 10_000;
 const UPSTREAM_RECHECK_MILLISECONDS = 30 * 24 * 60 * 60 * 1000;
 const RETRY_BACKOFF_MILLISECONDS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -133,7 +136,9 @@ export async function onRequestGet({ request, env }) {
     await store.put(requestData.complexKey, record);
 
     try {
-      record = await advanceCollection(record, serviceKey);
+      record = await advanceCollectionBatch(record, serviceKey, {
+        maxPages: resolvePagesPerRequest(env),
+      });
       clearCollectionError(record);
     } catch (error) {
       const details = normalizeErrorDetails(error, Number(record.nextPage) || 1);
@@ -386,6 +391,35 @@ export async function advanceCollection(record, serviceKey, options = {}) {
   }
 
   syncLegacyProgress(record);
+  return record;
+}
+
+export async function advanceCollectionBatch(record, serviceKey, options = {}) {
+  const startedAt = Date.now();
+  const maxPages = Math.min(
+    MAX_PAGES_PER_REQUEST,
+    Math.max(1, positiveInteger(options.maxPages) || DEFAULT_PAGES_PER_REQUEST)
+  );
+  let processedPages = 0;
+
+  try {
+    do {
+      record = await advanceCollection(record, serviceKey, options);
+      processedPages += 1;
+      if (record.status === "ready") break;
+    } while (
+      processedPages < maxPages &&
+      Date.now() - startedAt < COLLECTION_BATCH_BUDGET_MILLISECONDS
+    );
+  } finally {
+    record.lastBatch = {
+      processedPages,
+      maxPages,
+      durationMs: Date.now() - startedAt,
+      finishedAt: new Date().toISOString(),
+    };
+  }
+
   return record;
 }
 
@@ -965,8 +999,21 @@ function progressResponse(record, storage, status = 202) {
       error: record.error || "",
       errorDetails: record.errorDetails || null,
       failedPage: positiveInteger(record.failedPage),
+      pagesProcessedThisRequest: positiveInteger(record.lastBatch?.processedPages) || 0,
+      pagesPerRequest: positiveInteger(record.lastBatch?.maxPages) || DEFAULT_PAGES_PER_REQUEST,
+      batchDurationMs: Math.max(0, Number(record.lastBatch?.durationMs) || 0),
     },
     { status, cacheControl: "no-store" }
+  );
+}
+
+function resolvePagesPerRequest(env) {
+  return Math.min(
+    MAX_PAGES_PER_REQUEST,
+    Math.max(
+      1,
+      positiveInteger(env?.SUPPLY_PAGES_PER_REQUEST) || DEFAULT_PAGES_PER_REQUEST
+    )
   );
 }
 
