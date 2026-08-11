@@ -18,7 +18,7 @@ const d1 = createD1RestClient({
 await d1.ensureSchema();
 const result = await d1.resetSupplyCalculations();
 const report = {
-  version: "v2026.08.11-01-rc.1",
+  version: "v2026.08.11-01-rc.2",
   scope: "supply-calculations-only",
   preserved: ["supply_batch_catalog apartment metadata"],
   reset: [

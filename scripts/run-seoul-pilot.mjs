@@ -115,7 +115,7 @@ const verifiedResolutionByComplexKey = new Map();
 const permitBasisCatalogByDong = new Map();
 
 const report = {
-  version: "v2026.08.11-01-rc.1",
+  version: "v2026.08.11-01-rc.2",
   runId,
   scope: {
     region: "서울특별시",
@@ -965,8 +965,9 @@ async function collectPermitProfile(record, options = {}) {
       attempt.validation = profile.householdValidation;
       const isComplete =
         profile.groups.length > 0 &&
-        (profile.householdValidation.status === "matched" ||
-          profile.householdValidation.status === "unavailable");
+        profile.areaValidation?.status === "matched" &&
+        (profile.householdValidation.status === "unavailable" ||
+          profile.householdValidation.exactMatch === true);
       attempt.status = isComplete ? "ready" : "validation-failed";
       if (isComplete) {
         return {

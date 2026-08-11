@@ -1,6 +1,8 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v12-ledger-primary";
+  "supply-model-v13-strict-common-area";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
+export const MIN_SUPPLY_TO_EXCLUSIVE_RATIO = 1.1;
+export const MAX_SUPPLY_TO_EXCLUSIVE_RATIO = 1.8;
 
 export const STANDARD_AREA_GROUPS = [
   { id: "59", label: "59타입", min: 58, max: 60, target: 59, method: "standard" },
@@ -222,6 +224,7 @@ export function buildSupplyProfileFromPatterns({
     processedUnits,
     skippedUnits,
   });
+  profile.areaValidation = buildAreaValidation(patterns);
   return profile;
 }
 
@@ -256,8 +259,7 @@ export function buildHouseholdValidation({
     expected >= 200 ? Math.max(2, Math.ceil(expected * 0.01)) : 0;
   const exactMatch = difference === 0;
   return {
-    status:
-      Math.abs(difference) <= toleranceHouseholds ? "matched" : "mismatch",
+    status: exactMatch ? "matched" : "mismatch",
     expectedHouseholds: expected,
     collectedHouseholds: collected,
     observedLedgerUnits: observed,
@@ -265,6 +267,41 @@ export function buildHouseholdValidation({
     coverageRate: round(collected / expected, 6),
     toleranceHouseholds,
     exactMatch,
+  };
+}
+
+export function buildAreaValidation(inputPatterns) {
+  const issues = (Array.isArray(inputPatterns) ? inputPatterns : [])
+    .map((pattern) => {
+      const exclusiveArea = Number(pattern?.exclusiveArea) || 0;
+      const supplyArea = Number(pattern?.supplyArea) || 0;
+      const ratio = exclusiveArea > 0 ? supplyArea / exclusiveArea : 0;
+      if (
+        ratio >= MIN_SUPPLY_TO_EXCLUSIVE_RATIO &&
+        ratio <= MAX_SUPPLY_TO_EXCLUSIVE_RATIO
+      ) {
+        return null;
+      }
+      return {
+        dong: String(pattern?.dong || ""),
+        exclusiveArea: round(exclusiveArea, 4),
+        supplyArea: round(supplyArea, 4),
+        unitCount: Math.max(0, Math.round(Number(pattern?.unitCount) || 0)),
+        ratio: round(ratio, 6),
+        reason:
+          ratio < MIN_SUPPLY_TO_EXCLUSIVE_RATIO
+            ? "supply-ratio-too-low"
+            : "supply-ratio-too-high",
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    status: issues.length ? "mismatch" : "matched",
+    minSupplyRatio: MIN_SUPPLY_TO_EXCLUSIVE_RATIO,
+    maxSupplyRatio: MAX_SUPPLY_TO_EXCLUSIVE_RATIO,
+    issueCount: issues.length,
+    issues: issues.slice(0, 20),
   };
 }
 
@@ -305,9 +342,18 @@ export function isResidentialCommonPurpose(value) {
   const purpose = normalizeText(value);
   if (!purpose) return false;
   if (purpose.includes("대피")) return true;
-  const hasResidentialTerm = RESIDENTIAL_COMMON_TERMS.some((term) => purpose.includes(term));
-  const hasExcludedTerm = NON_RESIDENTIAL_TERMS.some((term) => purpose.includes(term));
-  return hasResidentialTerm && !hasExcludedTerm;
+  const residentialTermCount = countMatchedTerms(
+    purpose,
+    RESIDENTIAL_COMMON_TERMS
+  );
+  const nonResidentialTermCount = countMatchedTerms(
+    purpose,
+    NON_RESIDENTIAL_TERMS
+  );
+  return (
+    residentialTermCount > 0 &&
+    residentialTermCount > nonResidentialTermCount
+  );
 }
 
 export function isApartmentExclusivePurpose(value) {
@@ -670,6 +716,13 @@ function rowPurpose(row) {
 
 function normalizeText(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function countMatchedTerms(value, terms) {
+  return terms.reduce(
+    (count, term) => count + (value.includes(term) ? 1 : 0),
+    0
+  );
 }
 
 function toArea(value) {

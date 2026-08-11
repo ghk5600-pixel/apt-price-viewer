@@ -305,6 +305,7 @@ export async function advanceCollection(record, serviceKey, options = {}) {
         managementPks: record.resolution.managementPks,
         matchedAt: record.resolution.matchedAt,
       };
+      assertCompletedProfileValidation(record.profile, pageNo);
       record.status = "ready";
       record.collectionState = null;
       record.fetchedAt = new Date().toISOString();
@@ -316,6 +317,36 @@ export async function advanceCollection(record, serviceKey, options = {}) {
 
   syncLegacyProgress(record);
   return record;
+}
+
+function assertCompletedProfileValidation(profile, pageNo) {
+  const householdValidation = profile?.householdValidation;
+  if (
+    householdValidation?.expectedHouseholds &&
+    householdValidation.exactMatch !== true
+  ) {
+    throw createCollectionError({
+      operation: BUILDING_AREA_OPERATION,
+      pageNo,
+      resultCode: "HOUSEHOLD_COUNT_MISMATCH",
+      resultMessage: `K-apt ${householdValidation.expectedHouseholds}세대와 건축물대장 ${householdValidation.collectedHouseholds}세대가 정확히 일치하지 않습니다.`,
+      retryable: false,
+    });
+  }
+  if (profile?.areaValidation?.status !== "matched") {
+    const firstIssue = profile.areaValidation?.issues?.[0];
+    throw createCollectionError({
+      operation: BUILDING_AREA_OPERATION,
+      pageNo,
+      resultCode: "ABNORMAL_SUPPLY_AREA",
+      resultMessage: `비정상 공급면적 후보를 ${profile.areaValidation?.issueCount || 0}건 발견했습니다${
+        firstIssue
+          ? ` (전용 ${firstIssue.exclusiveArea}㎡, 공급 ${firstIssue.supplyArea}㎡)`
+          : ""
+      }.`,
+      retryable: false,
+    });
+  }
 }
 
 async function ensureBuildingLedgerResolution(record, serviceKey, onRequest) {

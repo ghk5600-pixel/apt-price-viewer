@@ -48,7 +48,7 @@ test("permit rows produce household-weighted supply-area candidates", () => {
   assert.deepEqual(profile.provenance.unmatchedTypes, []);
 });
 
-test("large apartment household totals allow a one-percent administrative tolerance", () => {
+test("large apartment household totals require an exact K-apt match", () => {
   const typeRows = [typeRow(1, "84A", 84.95, 316)];
   const areaRows = areaPattern("1000000000000000000001", 84.95, 6, 20, 1);
 
@@ -61,7 +61,7 @@ test("large apartment household totals allow a one-percent administrative tolera
     expectedHouseholds: 318,
   });
 
-  assert.equal(profile.householdValidation.status, "matched");
+  assert.equal(profile.householdValidation.status, "mismatch");
   assert.equal(profile.householdValidation.exactMatch, false);
   assert.equal(profile.householdValidation.difference, -2);
   assert.equal(profile.householdValidation.toleranceHouseholds, 4);

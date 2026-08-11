@@ -8,9 +8,7 @@ const COMMON_CODE = "2";
 const APARTMENT_PURPOSE_CODE = "02001";
 const APARTMENT_HOUSING_TYPE_CODE = "3";
 const MATCH_TOLERANCE = 0.02;
-const COMPATIBLE_PERMIT_CALCULATION_VERSIONS = new Set([
-  "supply-model-v7-permit-type-weighted",
-]);
+const COMPATIBLE_PERMIT_CALCULATION_VERSIONS = new Set();
 
 export function buildPermitSupplyProfile({
   complexKey,

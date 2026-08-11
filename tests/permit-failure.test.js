@@ -56,7 +56,7 @@ test("인허가 타입 행이 없으면 자료 미발견으로 분류한다", ()
   assert.equal(failure.resultCode, "PERMIT_PROFILE_NOT_FOUND");
 });
 
-test("산식이 같은 기존 인허가 성공 프로필은 재호출 없이 새 버전으로 이관한다", () => {
+test("기존 인허가 성공 프로필도 엄격 검증 버전에서는 다시 계산한다", () => {
   const record = {
     status: "ready",
     calculationVersion: "supply-model-v7-permit-type-weighted",
@@ -72,14 +72,11 @@ test("산식이 같은 기존 인허가 성공 프로필은 재호출 없이 새
     "same-source"
   );
 
-  assert.equal(migrated, true);
-  assert.equal(
-    record.calculationVersion,
-    "supply-model-v12-ledger-primary"
-  );
+  assert.equal(migrated, false);
+  assert.equal(record.calculationVersion, "supply-model-v7-permit-type-weighted");
   assert.equal(
     record.profile.calculationVersion,
-    "supply-model-v12-ledger-primary"
+    "supply-model-v7-permit-type-weighted"
   );
 });
 

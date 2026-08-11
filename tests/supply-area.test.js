@@ -17,6 +17,37 @@ test("주거공용과 기타공용 용도를 구분한다", () => {
   assert.equal(isResidentialCommonPurpose("대피소 지층대피소"), true);
   assert.equal(isResidentialCommonPurpose("지하주차장"), false);
   assert.equal(isResidentialCommonPurpose("커뮤니티 로비"), false);
+  assert.equal(
+    isResidentialCommonPurpose("계단실,승강기,홀,지하세대창고"),
+    true
+  );
+  assert.equal(
+    isResidentialCommonPurpose("경비실,택배보관함,휀룸,비상계단실"),
+    false
+  );
+});
+
+test("비정상 공급면적 비율을 정상 프로필과 구분한다", () => {
+  const validProfile = buildSupplyProfile({
+    complexKey: "valid-ratio",
+    source: {},
+    collectionState: {
+      patterns: [pattern("101동", 84.95, 111.72, 10)],
+      processedUnits: 10,
+    },
+  });
+  const invalidProfile = buildSupplyProfile({
+    complexKey: "invalid-ratio",
+    source: {},
+    collectionState: {
+      patterns: [pattern("101동", 84.95, 90.5, 10)],
+      processedUnits: 10,
+    },
+  });
+
+  assert.equal(validProfile.areaValidation.status, "matched");
+  assert.equal(invalidProfile.areaValidation.status, "mismatch");
+  assert.equal(invalidProfile.areaValidation.issues[0].reason, "supply-ratio-too-low");
 });
 
 test("아파트 전유면적만 포함하고 도시형 생활주택과 오피스텔은 제외한다", () => {
