@@ -1,5 +1,5 @@
 export const LEDGER_MATCH_VERSION =
-  "building-ledger-match-v3-apartment-unit-filter";
+  "building-ledger-match-v4-rental-inclusive";
 
 const TITLE_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const ATTACHED_LOT_OPERATION = "getBrAtchJibunInfo";
@@ -11,12 +11,6 @@ const EXCLUDED_HOUSING_MARKERS = [
   "소형주택",
   "청년안심주택",
   "역세권청년주택",
-  "공공임대",
-  "국민임대",
-  "영구임대",
-  "행복주택",
-  "장기전세",
-  "매입임대",
 ];
 const NON_APARTMENT_COMPONENT_MARKERS = [
   "오피스텔",
