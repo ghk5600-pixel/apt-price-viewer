@@ -3192,7 +3192,10 @@ function countBy(items, key) {
 
 function formatEok(value) {
   if (!Number.isFinite(value)) return "-";
-  return `${roundTo(value, 1).toLocaleString("ko-KR")}억`;
+  return `${Number(value).toLocaleString("ko-KR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}\uC5B5`;
 }
 
 function formatNumber(value) {
