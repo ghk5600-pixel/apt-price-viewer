@@ -1,5 +1,5 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v15-rental-inclusive";
+  "supply-model-v16-rental-ledger-inclusive";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 export const MIN_SUPPLY_TO_EXCLUSIVE_RATIO = 1.1;
 export const MAX_SUPPLY_TO_EXCLUSIVE_RATIO = 1.8;

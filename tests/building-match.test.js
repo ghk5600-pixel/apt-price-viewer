@@ -155,6 +155,23 @@ test("도시형 생활주택과 오피스텔은 아파트 관리번호로 분류
   );
 });
 
+test("공공임대 아파트 동은 일반 아파트와 같은 관리번호 후보로 포함한다", () => {
+  assert.equal(
+    classifyBuildingComponent({
+      mainPurpsCdNm: "공동주택",
+      etcPurps: "아파트 공공임대",
+    }),
+    "apartment"
+  );
+  assert.equal(
+    classifyBuildingComponent({
+      mainPurpsCdNm: "공동주택",
+      etcPurps: "아파트 민간임대",
+    }),
+    "apartment"
+  );
+});
+
 test("단지명이 일치하면 대표 지번이 달라도 높은 신뢰도로 선택한다", () => {
   const scoring = scoreBuildingLedgerRow(
     titleRow({
