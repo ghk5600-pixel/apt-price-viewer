@@ -1044,6 +1044,7 @@ function syncHouseholdValidation(record) {
     profileUnitCount: record.profile.unitCount,
     processedUnits: record.profile.unitCount,
     skippedUnits: record.profile.skippedUnits,
+    rentalHouseholds: record.profile.rentalHouseholds,
   });
   const changed =
     JSON.stringify(record.profile.householdValidation || null) !== JSON.stringify(nextValidation);
