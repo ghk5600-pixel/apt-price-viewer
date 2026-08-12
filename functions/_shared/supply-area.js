@@ -1,5 +1,5 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v14-on-demand-d1";
+  "supply-model-v15-rental-inclusive";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 export const MIN_SUPPLY_TO_EXCLUSIVE_RATIO = 1.1;
 export const MAX_SUPPLY_TO_EXCLUSIVE_RATIO = 1.8;
@@ -83,12 +83,6 @@ const EXCLUDED_APARTMENT_UNIT_MARKERS = [
   "소형주택",
   "청년안심주택",
   "역세권청년주택",
-  "공공임대",
-  "국민임대",
-  "영구임대",
-  "행복주택",
-  "장기전세",
-  "매입임대",
   "오피스텔",
   "업무시설",
   "판매시설",
@@ -97,6 +91,17 @@ const EXCLUDED_APARTMENT_UNIT_MARKERS = [
   "다세대주택",
   "연립주택",
   "기숙사",
+];
+
+const RENTAL_APARTMENT_UNIT_MARKERS = [
+  "공공임대",
+  "국민임대",
+  "영구임대",
+  "행복주택",
+  "장기전세",
+  "매입임대",
+  "민간임대",
+  "기타임대",
 ];
 
 export function createCollectionState() {
@@ -167,6 +172,7 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
         residentialCommonArea: round(residentialCommonArea, 4),
         supplyArea: round(unit.exclusiveArea + residentialCommonArea, 4),
         unitCount: 1,
+        rentalUnitCount: unit.isRentalApartment ? 1 : 0,
         components: [],
       });
       state.processedUnits += 1;
@@ -191,6 +197,7 @@ function createPendingUnit(key) {
     exclusiveDongName: "",
     residentialCommonArea: 0,
     shelterCommonAreas: [],
+    isRentalApartment: false,
   };
 }
 
@@ -200,6 +207,9 @@ function consumePendingUnitRow(unit, row) {
   addUniqueValue(unit.dongNames, String(row?.dongNm || "").trim());
   const usage = normalizeText(row?.exposPubuseGbCdNm);
   const area = toArea(row?.area);
+  if (isRentalApartmentPurpose(rowPurpose(row))) {
+    unit.isRentalApartment = true;
+  }
   if (
     usage === "전유" &&
     area > 10 &&
@@ -307,6 +317,7 @@ export function buildSupplyProfile({
     filteredRows: state.filteredRows,
     processedUnits: state.processedUnits,
     skippedUnits: state.skippedUnits,
+    rentalHouseholds: state.rentalHouseholds,
   });
 }
 
@@ -321,6 +332,7 @@ export function buildSupplyProfileFromPatterns({
   filteredRows = 0,
   processedUnits = 0,
   skippedUnits = 0,
+  rentalHouseholds = 0,
   provenance = null,
 }) {
   const patterns = (Array.isArray(inputPatterns) ? inputPatterns : [])
@@ -330,6 +342,13 @@ export function buildSupplyProfileFromPatterns({
       residentialCommonArea: Number(pattern?.residentialCommonArea) || 0,
       supplyArea: Number(pattern?.supplyArea) || 0,
       unitCount: Math.max(0, Math.round(Number(pattern?.unitCount) || 0)),
+      rentalUnitCount: Math.max(
+        0,
+        Math.min(
+          Math.round(Number(pattern?.unitCount) || 0),
+          Math.round(Number(pattern?.rentalUnitCount) || 0)
+        )
+      ),
     }))
     .filter((pattern) => pattern.unitCount > 0 && pattern.exclusiveArea > 0 && pattern.supplyArea > pattern.exclusiveArea)
     .sort((a, b) => a.exclusiveArea - b.exclusiveArea || a.supplyArea - b.supplyArea);
@@ -353,11 +372,23 @@ export function buildSupplyProfileFromPatterns({
     groups,
   };
   if (provenance) profile.provenance = provenance;
+  profile.rentalHouseholds = Math.min(
+    profile.unitCount,
+    Math.max(
+      0,
+      Math.round(
+        Number(rentalHouseholds) ||
+          patterns.reduce((sum, pattern) => sum + pattern.rentalUnitCount, 0)
+      )
+    )
+  );
+  profile.saleOrUnknownHouseholds = profile.unitCount - profile.rentalHouseholds;
   profile.householdValidation = buildHouseholdValidation({
     expectedHouseholds,
     profileUnitCount: profile.unitCount,
     processedUnits,
     skippedUnits,
+    rentalHouseholds: profile.rentalHouseholds,
   });
   profile.areaValidation = buildAreaValidation(patterns);
   return profile;
@@ -368,6 +399,7 @@ export function buildHouseholdValidation({
   profileUnitCount,
   processedUnits = 0,
   skippedUnits = 0,
+  rentalHouseholds = 0,
 }) {
   const expected = positiveInteger(expectedHouseholds);
   const collected = Math.max(0, Math.round(Number(profileUnitCount) || 0));
@@ -393,10 +425,13 @@ export function buildHouseholdValidation({
   const toleranceHouseholds =
     expected >= 200 ? Math.max(2, Math.ceil(expected * 0.01)) : 0;
   const exactMatch = difference === 0;
+  const rental = Math.min(collected, Math.max(0, Math.round(Number(rentalHouseholds) || 0)));
   return {
-    status: exactMatch ? "matched" : "mismatch",
+    status: exactMatch ? (rental > 0 ? "rental-included" : "matched") : "mismatch",
     expectedHouseholds: expected,
     collectedHouseholds: collected,
+    rentalHouseholds: rental,
+    saleOrUnknownHouseholds: collected - rental,
     observedLedgerUnits: observed,
     difference,
     coverageRate: round(collected / expected, 6),
@@ -504,6 +539,11 @@ export function isApartmentExclusivePurpose(value) {
   return purpose.includes("아파트") || purpose === "공동주택";
 }
 
+function isRentalApartmentPurpose(value) {
+  const purpose = normalizeText(value);
+  return RENTAL_APARTMENT_UNIT_MARKERS.some((marker) => purpose.includes(marker));
+}
+
 export function matchesApartmentComponent(rows, components) {
   const selectors = normalizeApartmentComponents(components);
   if (!selectors.length) return true;
@@ -566,6 +606,7 @@ function normalizeCollectionState(inputState) {
     filteredRows: Number(state.filteredRows) || 0,
     processedUnits: Number(state.processedUnits) || 0,
     skippedUnits: Number(state.skippedUnits) || 0,
+    rentalHouseholds: Number(state.rentalHouseholds) || 0,
     seenUnitHashes: normalizeSeenUnitHashes(state),
     warnings: Array.isArray(state.warnings) ? state.warnings : [],
   };
@@ -586,6 +627,7 @@ function normalizePendingUnit(unit) {
     )
       .map(toArea)
       .filter((area) => area > 0),
+    isRentalApartment: Boolean(unit?.isRentalApartment),
   };
 }
 
@@ -648,6 +690,9 @@ function mergeUnitPattern(patterns, patternIndex, unit) {
   const existing = patternIndex.get(key);
   if (existing) {
     existing.unitCount += 1;
+    existing.rentalUnitCount =
+      Math.max(0, Number(existing.rentalUnitCount) || 0) +
+      Math.max(0, Number(unit.rentalUnitCount) || 0);
     return;
   }
   const { components: _components, ...compactUnit } = unit;

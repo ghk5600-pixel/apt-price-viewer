@@ -17,7 +17,7 @@ const BUILDING_HUB_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
 const DEFAULT_KAKAO_JAVASCRIPT_KEY = "f1381fcba950abff23056942bd19d544";
 const ADMIN_QUERY_PARAM = "admin";
-const SUPPLY_CALCULATION_VERSION = "supply-model-v14-on-demand-d1";
+const SUPPLY_CALCULATION_VERSION = "supply-model-v15-rental-inclusive";
 const SUPPLY_PROFILE_POLL_DELAY = 200;
 const SUPPLY_PROFILE_MAX_POLLS = 500;
 const SUPPLY_PROFILE_CLIENT_RETRY_DELAYS = [1_000, 3_000, 10_000, 30_000];
@@ -1797,6 +1797,9 @@ function formatSupplyProfileReadyMessage(payload) {
   if (validation.status === "matched") {
     return `${storageMessage} · ${formatNumber(collected)}/${formatNumber(expected)}세대 검증`;
   }
+  if (validation.status === "rental-included") {
+    return `${storageMessage} · 임대 포함 ${formatNumber(collected)}/${formatNumber(expected)}세대 검증`;
+  }
   const difference = Math.abs(Number(validation?.difference) || collected - expected);
   return `${storageMessage} · ${formatNumber(collected)}/${formatNumber(expected)}세대 수집 · ${formatNumber(
     difference
@@ -3224,7 +3227,7 @@ function formatSupplyProfileShortStatus(complex, transaction) {
   if (complex?.supplyProfileStatus === "loading") return `${complex.supplyProfileProgress || 0}% 처리`;
   if (complex?.supplyProfileStatus === "error") {
     const labels = {
-      HOUSEHOLD_COUNT_MISMATCH: "세대수 불일치",
+      HOUSEHOLD_COUNT_MISMATCH: "세대 구성 확인 필요",
       ABNORMAL_SUPPLY_AREA: "면적 검증 실패",
       NO_RESIDENTIAL_UNITS: "아파트 세대 없음",
       LEDGER_MATCH_NOT_FOUND: "대장 매칭 실패",
