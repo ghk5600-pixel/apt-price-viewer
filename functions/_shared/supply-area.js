@@ -1,5 +1,5 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v16-rental-ledger-inclusive";
+  "supply-model-v17-residential-common-inclusive";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 export const MIN_SUPPLY_TO_EXCLUSIVE_RATIO = 1.1;
 export const MAX_SUPPLY_TO_EXCLUSIVE_RATIO = 1.8;
@@ -23,6 +23,13 @@ const RESIDENTIAL_COMMON_TERMS = [
   "로비",
   "라운지",
   "벽체",
+  "피트",
+  "pit",
+  "통로",
+  "전실",
+  "주거공용",
+  "기타공용",
+  "공용",
 ];
 
 const NON_RESIDENTIAL_TERMS = [
