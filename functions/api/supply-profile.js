@@ -167,14 +167,26 @@ function shouldResetRecord(record, requestData) {
 
 async function advanceCollection(record, serviceKey) {
   const pageNo = Math.max(1, Number(record.nextPage) || 1);
+  const alreadyConsumed = Number(record.lastSuccessfulPage) >= pageNo;
   let page;
 
-  if (!record.pageSize) {
+  if (alreadyConsumed) {
+    page = { items: [], totalCount: record.totalRows, returnedPageSize: record.pageSize };
+  } else if (!record.pageSize) {
     const negotiation = await negotiatePageSize(serviceKey, record.source);
     page = negotiation.page;
     record.pageSize = negotiation.pageSize;
     record.pageSizeProbe = negotiation.probes;
   } else {
+    const totalPages = Math.max(1, Number(record.totalPages) || 1);
+    if (pageNo > totalPages) {
+      throw createCollectionError({
+        pageNo,
+        resultCode: "PAGE_OUT_OF_RANGE",
+        resultMessage: `전체 ${totalPages}페이지보다 큰 페이지를 요청했습니다.`,
+        retryable: false,
+      });
+    }
     page = await fetchBuildingAreaPage(serviceKey, record.source, pageNo, record.pageSize);
   }
 
@@ -184,46 +196,45 @@ async function advanceCollection(record, serviceKey) {
   }
 
   const totalPages = Math.max(1, Number(record.totalPages) || 1);
-  if (pageNo > totalPages) {
-    throw createCollectionError({
-      pageNo,
-      resultCode: "PAGE_OUT_OF_RANGE",
-      resultMessage: `전체 ${totalPages}페이지보다 큰 페이지를 요청했습니다.`,
-      retryable: false,
+
+  if (!alreadyConsumed) {
+    record.collectionState = consumeBuildingAreaRows(record.collectionState, page.items, {
+      isFinal: pageNo === totalPages,
     });
+    record.lastSuccessfulPage = pageNo;
   }
 
-  record.collectionState = consumeBuildingAreaRows(record.collectionState, page.items, {
-    isFinal: pageNo === totalPages,
-  });
-  record.lastSuccessfulPage = pageNo;
-  record.nextPage = pageNo + 1;
-
-  if (pageNo === totalPages) {
-    record.profile = buildSupplyProfile({
-      complexKey: record.complexKey,
-      source: record.source,
-      collectionState: record.collectionState,
-      expectedHouseholds: record.expectedHouseholds,
-    });
-    if (!record.profile.groups.length) {
-      throw createCollectionError({
-        pageNo,
-        resultCode: "NO_RESIDENTIAL_UNITS",
-        resultMessage: "공급면적 그룹을 생성할 수 있는 공동주택 세대가 없습니다.",
-        retryable: false,
+  if (pageNo >= totalPages) {
+    try {
+      record.profile = buildSupplyProfile({
+        complexKey: record.complexKey,
+        source: record.source,
+        collectionState: record.collectionState,
+        expectedHouseholds: record.expectedHouseholds,
       });
+      if (!record.profile.groups.length) {
+        throw createCollectionError({
+          pageNo,
+          resultCode: "NO_RESIDENTIAL_UNITS",
+          resultMessage: "공급면적 그룹을 생성할 수 있는 공동주택 세대가 없습니다.",
+          retryable: false,
+        });
+      }
+      record.profile.collection = {
+        pageSize: record.pageSize,
+        totalRows: record.totalRows,
+        totalPages: record.totalPages,
+        protocolVersion: COLLECTION_PROTOCOL_VERSION,
+      };
+      record.status = "ready";
+      record.collectionState = null;
+      record.fetchedAt = new Date().toISOString();
+      record.nextPage = pageNo + 1;
+    } catch (error) {
+      throw error;
     }
-    record.profile.collection = {
-      pageSize: record.pageSize,
-      totalRows: record.totalRows,
-      totalPages: record.totalPages,
-      protocolVersion: COLLECTION_PROTOCOL_VERSION,
-    };
-    record.status = "ready";
-    record.collectionState = null;
-    record.fetchedAt = new Date().toISOString();
   } else {
+    record.nextPage = pageNo + 1;
     record.status = "building";
   }
 
