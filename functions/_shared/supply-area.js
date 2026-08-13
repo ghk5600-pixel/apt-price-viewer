@@ -116,6 +116,7 @@ export function createCollectionState() {
     skippedUnits: 0,
     seenUnitHashes: [],
     warnings: [],
+    debugPurposes: [],
   };
 }
 
@@ -134,6 +135,10 @@ export function consumeBuildingAreaRows(inputState, rows, options = {}) {
   );
 
   incomingRows.forEach((row) => {
+    const purpose = String(row?.exposPubuseGbCdNm || "").trim();
+    if (purpose && !state.debugPurposes.includes(purpose)) {
+      state.debugPurposes.push(purpose);
+    }
     const unitKey = unitRowKey(row);
     if (!unitKey) return;
     const unitHash = hashUnitKey(unitKey);

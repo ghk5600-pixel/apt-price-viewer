@@ -470,7 +470,7 @@ function assertCompletedProfileValidation(profile, pageNo) {
         firstIssue
           ? ` (전용 ${firstIssue.exclusiveArea}㎡, 공급 ${firstIssue.supplyArea}㎡)`
           : ""
-      }.`,
+      }. 건축물대장 전체 용도 목록: [${(profile.debugPurposes || []).join(", ")}]`,
       retryable: false,
     });
   }
