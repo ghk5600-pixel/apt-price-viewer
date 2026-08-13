@@ -456,18 +456,10 @@ export async function advanceCollectionBatch(record, serviceKey, options = {}) {
 
 function assertCompletedProfileValidation(profile, pageNo) {
   const householdValidation = profile?.householdValidation;
-  if (
-    householdValidation?.expectedHouseholds &&
-    householdValidation.exactMatch !== true
-  ) {
-    throw createCollectionError({
-      operation: BUILDING_AREA_OPERATION,
-      pageNo,
-      resultCode: "HOUSEHOLD_COUNT_MISMATCH",
-      resultMessage: `K-apt ${householdValidation.expectedHouseholds}세대와 건축물대장 ${householdValidation.collectedHouseholds}세대가 정확히 일치하지 않습니다.`,
-      retryable: false,
-    });
-  }
+  // We no longer throw an error on HOUSEHOLD_COUNT_MISMATCH.
+  // The discrepancy (e.g. missing rental units in ledger) is preserved in the profile's householdValidation.
+  // The frontend can display a warning badge based on this data if desired, but the supply profile calculation will succeed.
+
   if (profile?.areaValidation?.status !== "matched") {
     const firstIssue = profile.areaValidation?.issues?.[0];
     throw createCollectionError({
