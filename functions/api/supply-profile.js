@@ -306,14 +306,27 @@ export async function advanceCollection(record, serviceKey, options = {}) {
   await ensureBuildingLedgerResolution(record, serviceKey, options.onRequest);
   const plan = activateSourcePlan(record, record.activeSourceIndex);
   const pageNo = Math.max(1, Number(plan.nextPage) || 1);
+  const alreadyConsumed = Number(plan.lastSuccessfulPage) >= pageNo;
   let page;
 
-  if (!plan.pageSize) {
+  if (alreadyConsumed) {
+    page = { items: [], totalCount: plan.totalRows, returnedPageSize: plan.pageSize };
+  } else if (!plan.pageSize) {
     const negotiation = await negotiatePageSize(serviceKey, plan.source, options.onRequest);
     page = negotiation.page;
     plan.pageSize = negotiation.pageSize;
     plan.pageSizeProbe = negotiation.probes;
   } else {
+    const totalPages = Math.max(1, Number(plan.totalPages) || 1);
+    if (pageNo > totalPages) {
+      throw createCollectionError({
+        operation: BUILDING_AREA_OPERATION,
+        pageNo,
+        resultCode: "PAGE_OUT_OF_RANGE",
+        resultMessage: `전체 ${totalPages}페이지보다 큰 페이지를 요청했습니다.`,
+        retryable: false,
+      });
+    }
     page = await fetchBuildingAreaPage(
       serviceKey,
       plan.source,
@@ -329,83 +342,81 @@ export async function advanceCollection(record, serviceKey, options = {}) {
   }
 
   const totalPages = Math.max(1, Number(plan.totalPages) || 1);
-  if (pageNo > totalPages) {
-    throw createCollectionError({
-      operation: BUILDING_AREA_OPERATION,
-      pageNo,
-      resultCode: "PAGE_OUT_OF_RANGE",
-      resultMessage: `전체 ${totalPages}페이지보다 큰 페이지를 요청했습니다.`,
-      retryable: false,
+
+  if (!alreadyConsumed) {
+    record.collectionState = consumeBuildingAreaRows(record.collectionState, page.items, {
+      isFinal: pageNo === totalPages,
+      apartmentComponents: record.resolution.components,
     });
+    plan.lastSuccessfulPage = pageNo;
   }
 
-  record.collectionState = consumeBuildingAreaRows(record.collectionState, page.items, {
-    isFinal: pageNo === totalPages,
-    apartmentComponents: record.resolution.components,
-  });
-  plan.lastSuccessfulPage = pageNo;
-  plan.nextPage = pageNo + 1;
-
-  if (pageNo === totalPages) {
-    plan.status = "complete";
-    if (record.activeSourceIndex < record.sourcePlans.length - 1) {
-      record.activeSourceIndex += 1;
-      activateSourcePlan(record, record.activeSourceIndex);
-      record.status = "building";
-    } else {
-      record.profile = buildSupplyProfile({
-        complexKey: record.complexKey,
-        source: {
-          requested: record.resolution.requestedSource,
-          fallbackRequested: record.resolution.fallbackRequestedSource || null,
-          resolved: record.resolvedSources,
-          managementPks: record.resolution.managementPks,
-          apartmentComponents: record.resolution.components || [],
-          matchVersion: LEDGER_MATCH_VERSION,
-        },
-        collectionState: record.collectionState,
-        expectedHouseholds: record.expectedHouseholds,
-      });
-      if (!record.profile.groups.length) {
-        throw createCollectionError({
-          operation: BUILDING_AREA_OPERATION,
-          pageNo,
-          resultCode: "NO_RESIDENTIAL_UNITS",
-          resultMessage:
-            "동일 단지로 확인한 건축물대장에서 공급면적 그룹을 생성할 공동주택 세대를 찾지 못했습니다.",
-          retryable: false,
+  if (pageNo >= totalPages) {
+    try {
+      plan.status = "complete";
+      if (record.activeSourceIndex < record.sourcePlans.length - 1) {
+        record.activeSourceIndex += 1;
+        activateSourcePlan(record, record.activeSourceIndex);
+        record.status = "building";
+      } else {
+        record.profile = buildSupplyProfile({
+          complexKey: record.complexKey,
+          source: {
+            requested: record.resolution.requestedSource,
+            fallbackRequested: record.resolution.fallbackRequestedSource || null,
+            resolved: record.resolvedSources,
+            managementPks: record.resolution.managementPks,
+            apartmentComponents: record.resolution.components || [],
+            matchVersion: LEDGER_MATCH_VERSION,
+          },
+          collectionState: record.collectionState,
+          expectedHouseholds: record.expectedHouseholds,
         });
+        if (!record.profile.groups.length) {
+          throw createCollectionError({
+            operation: BUILDING_AREA_OPERATION,
+            pageNo,
+            resultCode: "NO_RESIDENTIAL_UNITS",
+            resultMessage:
+              "동일 단지로 확인한 건축물대장에서 공급면적 그룹을 생성할 공동주택 세대를 찾지 못했습니다.",
+            retryable: false,
+          });
+        }
+        const aggregate = aggregateCollectionProgress(record);
+        record.profile.collection = {
+          sourceCount: record.sourcePlans.length,
+          pageSize:
+            record.sourcePlans.length === 1 ? record.sourcePlans[0].pageSize : null,
+          totalRows: aggregate.totalRows,
+          totalPages: aggregate.totalPages,
+          sources: record.sourcePlans.map((sourcePlan) => ({
+            source: sourcePlan.source,
+            pageSize: sourcePlan.pageSize,
+            totalRows: sourcePlan.totalRows,
+            totalPages: sourcePlan.totalPages,
+          })),
+          protocolVersion: COLLECTION_PROTOCOL_VERSION,
+          ledgerMatchVersion: LEDGER_MATCH_VERSION,
+        };
+        record.profile.ledgerMatch = {
+          candidates: record.resolution.candidates,
+          apartmentComponents: record.resolution.components || [],
+          excludedComponents: record.resolution.excludedComponents || [],
+          managementPks: record.resolution.managementPks,
+          matchedAt: record.resolution.matchedAt,
+          sourceDiscovery: record.sourceDiscovery || null,
+        };
+        assertCompletedProfileValidation(record.profile, pageNo);
+        record.status = "ready";
+        record.collectionState = null;
+        record.fetchedAt = new Date().toISOString();
       }
-      const aggregate = aggregateCollectionProgress(record);
-      record.profile.collection = {
-        sourceCount: record.sourcePlans.length,
-        pageSize:
-          record.sourcePlans.length === 1 ? record.sourcePlans[0].pageSize : null,
-        totalRows: aggregate.totalRows,
-        totalPages: aggregate.totalPages,
-        sources: record.sourcePlans.map((sourcePlan) => ({
-          source: sourcePlan.source,
-          pageSize: sourcePlan.pageSize,
-          totalRows: sourcePlan.totalRows,
-          totalPages: sourcePlan.totalPages,
-        })),
-        protocolVersion: COLLECTION_PROTOCOL_VERSION,
-        ledgerMatchVersion: LEDGER_MATCH_VERSION,
-      };
-      record.profile.ledgerMatch = {
-        candidates: record.resolution.candidates,
-        apartmentComponents: record.resolution.components || [],
-        excludedComponents: record.resolution.excludedComponents || [],
-        managementPks: record.resolution.managementPks,
-        matchedAt: record.resolution.matchedAt,
-        sourceDiscovery: record.sourceDiscovery || null,
-      };
-      assertCompletedProfileValidation(record.profile, pageNo);
-      record.status = "ready";
-      record.collectionState = null;
-      record.fetchedAt = new Date().toISOString();
+      plan.nextPage = pageNo + 1;
+    } catch (error) {
+      throw error;
     }
   } else {
+    plan.nextPage = pageNo + 1;
     plan.status = "building";
     record.status = "building";
   }
