@@ -1603,6 +1603,11 @@ async function refreshSupplyProfileForComplex(complexId) {
       complex.supplyProfileMessage = error.message || "공급면적 프로필 조회 실패";
       complex.supplyProfileErrorCode =
         complex.supplyProfileErrorCode || error.code || "CLIENT_REQUEST_FAILED";
+      
+      if (complex.supplyProfileErrorCode === "ABNORMAL_SUPPLY_AREA" || String(error.message).includes("ABNORMAL_SUPPLY_AREA")) {
+        alert(complex.supplyProfileMessage);
+      }
+
       saveCustomComplexes();
       render();
     })
