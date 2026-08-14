@@ -62,7 +62,7 @@ jobs:
           EOF
           
           # Use Node.js script to avoid bash escaping hell with wrangler and sqlite
-          cat << 'EOF' > run.js
+          cat << 'EOF' > run.cjs
           const { execSync } = require('child_process');
           const fs = require('fs');
           
@@ -82,4 +82,4 @@ jobs:
           }
           EOF
           
-          node run.js
+          node run.cjs
