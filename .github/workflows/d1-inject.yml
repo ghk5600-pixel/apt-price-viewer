@@ -68,7 +68,7 @@ jobs:
           
           const payload = fs.readFileSync('payload.json', 'utf8');
           const updatedAt = Date.now();
-          const keys = ['lot:1141011100:0:289:54', 'kapt:A10027734', 'kapt:A10027982']; // Add some potential kaptCodes just in case
+          const keys = ['lot:1141011100:0:0289:0054', 'lot:1141011100:0:289:54', 'kapt:A10027734', 'kapt:A10027982']; // Add some potential kaptCodes just in case
           
           for (const key of keys) {
             const sql = `INSERT OR REPLACE INTO supply_profile_cache (complex_key, calculation_version, status, record_json, updated_at) VALUES ('${key}', 'supply-model-v17-residential-common-inclusive', 'ready', json('${payload}'), ${updatedAt});`;
