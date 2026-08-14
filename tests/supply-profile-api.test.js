@@ -292,7 +292,7 @@ test("같은 페이지가 반복 실패하면 처리 위치를 유지하고 페�
   }
 });
 
-test("K-apt 세대수와 수집 세대수가 다르면 결과 저장을 차단한다", async () => {
+test("K-apt 세대수와 수집 세대수가 달라도 결과 저장을 차단하지 않고 에러만 기록한다", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.__supplyProfileRecords = new Map();
   globalThis.fetch = async (url) => {
@@ -309,10 +309,10 @@ test("K-apt 세대수와 수집 세대수가 다르면 결과 저장을 차단�
     const { response, payload } = await callApi(
       requestUrl("validation-mismatch-complex", { expectedHouseholds: 3 })
     );
-    assert.equal(response.status, 502);
-    assert.equal(payload.status, "failed");
-    assert.equal(payload.errorDetails.resultCode, "HOUSEHOLD_COUNT_MISMATCH");
-    assert.match(payload.errorDetails.resultMessage, /K-apt 3세대/);
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "ready");
+    assert.equal(payload.profile.householdValidation.status, "mismatch");
+    assert.equal(payload.profile.householdValidation.difference, -2);
   } finally {
     globalThis.fetch = originalFetch;
   }

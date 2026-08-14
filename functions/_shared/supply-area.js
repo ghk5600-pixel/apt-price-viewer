@@ -29,7 +29,6 @@ const RESIDENTIAL_COMMON_TERMS = [
   "전실",
   "주거공용",
   "기타공용",
-  "공용",
 ];
 
 const NON_RESIDENTIAL_TERMS = [
@@ -318,7 +317,7 @@ export function buildSupplyProfile({
   calculatedAt = new Date().toISOString(),
 }) {
   const state = normalizeCollectionState(collectionState);
-  return buildSupplyProfileFromPatterns({
+  const profile = buildSupplyProfileFromPatterns({
     complexKey,
     source,
     patterns: state.patterns,
@@ -331,6 +330,8 @@ export function buildSupplyProfile({
     skippedUnits: state.skippedUnits,
     rentalHouseholds: state.rentalHouseholds,
   });
+  profile.debugPurposes = state.debugPurposes || [];
+  return profile;
 }
 
 export function buildSupplyProfileFromPatterns({
@@ -621,6 +622,7 @@ function normalizeCollectionState(inputState) {
     rentalHouseholds: Number(state.rentalHouseholds) || 0,
     seenUnitHashes: normalizeSeenUnitHashes(state),
     warnings: Array.isArray(state.warnings) ? state.warnings : [],
+    debugPurposes: Array.isArray(state.debugPurposes) ? state.debugPurposes : [],
   };
 }
 
