@@ -3227,7 +3227,7 @@ function formatSupplyProfileMessage(complex, transaction) {
 }
 
 function formatSupplyProfileShortStatus(complex, transaction) {
-  if (transaction?.ppyBasis === "supply-dong-weighted") return "동 기준 가중";
+  if (transaction?.ppyBasis === "supply-dong-weighted") return "";
   if (transaction?.ppyBasis === "supply-complex-weighted") return "";
   if (complex?.supplyProfileStatus === "loading") return `${complex.supplyProfileProgress || 0}% 처리`;
   if (complex?.supplyProfileStatus === "error") {
