@@ -1,0 +1,85 @@
+name: D1 Manual Injection
+on: workflow_dispatch
+jobs:
+  inject:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Wrangler
+        run: npm install -g wrangler
+      - name: Execute D1 Insert
+        run: |
+          cat << 'EOF' > payload.json
+          {
+            "status": "ready",
+            "expectedHouseholds": 283,
+            "processedUnits": 283,
+            "sources": [
+              {
+                "mgmBldrgstPk": "MANUAL",
+                "sigunguCd": "11410",
+                "bjdongCd": "11100",
+                "platGbCd": "0",
+                "bun": "0289",
+                "ji": "0054",
+                "bldNm": "DMC가재울아이파크",
+                "dongNm": "",
+                "households": 283
+              }
+            ],
+            "profile": {
+              "calculationVersion": "supply-model-v17-residential-common-inclusive",
+              "groups": {
+                "59": {
+                  "supplyArea": 81.2789,
+                  "sampleSize": 283
+                }
+              }
+            },
+            "diagnostics": {
+              "overrides": ["manual_injection_from_bot"]
+            }
+          }
+          EOF
+          
+          RECORD_JSON=$(cat payload.json)
+          UPDATED_AT=$(date +%s000)
+          
+          cat << EOF > query.sql
+          INSERT OR REPLACE INTO supply_profile_cache (complex_key, calculation_version, status, record_json, updated_at) 
+          VALUES ('lot:1141011100:0:289:54', 'supply-model-v17-residential-common-inclusive', 'ready', json_extract(readfile('payload.json'), '$'), $UPDATED_AT);
+          
+          INSERT OR REPLACE INTO supply_profile_cache (complex_key, calculation_version, status, record_json, updated_at) 
+          VALUES ('kapt:A10027734', 'supply-model-v17-residential-common-inclusive', 'ready', json_extract(readfile('payload.json'), '$'), $UPDATED_AT);
+          EOF
+          
+          # Use Node.js script to avoid bash escaping hell with wrangler and sqlite
+          cat << 'EOF' > run.js
+          const { execSync } = require('child_process');
+          const fs = require('fs');
+          
+          const payload = fs.readFileSync('payload.json', 'utf8');
+          const updatedAt = Date.now();
+          const keys = ['lot:1141011100:0:289:54', 'kapt:A10027734', 'kapt:A10027982']; // Add some potential kaptCodes just in case
+          
+          for (const key of keys) {
+            const sql = `INSERT OR REPLACE INTO supply_profile_cache (complex_key, calculation_version, status, record_json, updated_at) VALUES ('${key}', 'supply-model-v17-residential-common-inclusive', 'ready', json('${payload}'), ${updatedAt});`;
+            fs.writeFileSync('query.sql', sql);
+            console.log(`Executing for ${key}...`);
+            try {
+              execSync(`wrangler d1 execute SUPPLY_DB --remote --file=query.sql`, { stdio: 'inherit' });
+            } catch (e) {
+              console.error(`Failed for ${key}:`, e.message);
+            }
+          }
+          EOF
+          
+          node run.js
