@@ -2,6 +2,9 @@ import { SUPPLY_CALCULATION_VERSION } from "./supply-area.js";
 
 const TABLE_NAME = "supply_profile_cache";
 const USAGE_TABLE_NAME = "supply_profile_usage";
+const CASE_TABLE_NAME = "supply_review_case";
+const EVENT_TABLE_NAME = "supply_review_event";
+const MANUAL_TABLE_NAME = "supply_manual_profile";
 
 export async function createSupplyProfileStore(env) {
   if (env?.SUPPLY_DB) {
@@ -51,6 +54,44 @@ async function ensureD1Schema(db) {
        ON ${USAGE_TABLE_NAME}
           (registration_count DESC, request_count DESC, last_requested_at DESC)`
     ),
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS ${CASE_TABLE_NAME} (
+        complex_key TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        reason_code TEXT NOT NULL DEFAULT '',
+        request_json TEXT NOT NULL DEFAULT '{}',
+        record_json TEXT NOT NULL DEFAULT '{}',
+        first_detected_at TEXT NOT NULL,
+        last_detected_at TEXT NOT NULL,
+        last_auto_retry_at TEXT NOT NULL DEFAULT '',
+        resolved_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+      )`
+    ),
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS ${EVENT_TABLE_NAME} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        complex_key TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      )`
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_supply_review_case_status
+       ON ${CASE_TABLE_NAME} (status, last_detected_at DESC)`
+    ),
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS ${MANUAL_TABLE_NAME} (
+        complex_key TEXT PRIMARY KEY,
+        profile_json TEXT NOT NULL,
+        source_url TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        reviewer TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`
+    ),
   ];
   if (typeof db.batch === "function") {
     await db.batch(statements);
@@ -93,6 +134,7 @@ function createD1Store(db) {
         )
         .run();
       await syncD1UsageStatus(db, complexKey, record, updatedAt);
+      await syncD1ReviewCase(db, complexKey, record, updatedAt);
     },
     async noteAccess(complexKey, access = {}) {
       const now = new Date().toISOString();
@@ -147,6 +189,70 @@ function createD1Store(db) {
         )
         .run();
     },
+    async getManualProfile(complexKey) {
+      const row = await db
+        .prepare(`SELECT profile_json FROM ${MANUAL_TABLE_NAME} WHERE complex_key = ?1`)
+        .bind(complexKey)
+        .first();
+      return parseRecord(row?.profile_json);
+    },
+    async putManualProfile(complexKey, manual, actor = "admin") {
+      const now = new Date().toISOString();
+      await db
+        .prepare(
+          `INSERT INTO ${MANUAL_TABLE_NAME}
+             (complex_key, profile_json, source_url, note, reviewer, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+           ON CONFLICT(complex_key) DO UPDATE SET
+             profile_json = excluded.profile_json,
+             source_url = excluded.source_url,
+             note = excluded.note,
+             reviewer = excluded.reviewer,
+             updated_at = excluded.updated_at`
+        )
+        .bind(complexKey, JSON.stringify(manual), manual.sourceUrl || "", manual.note || "", actor, now)
+        .run();
+      await db
+        .prepare(
+          `UPDATE ${CASE_TABLE_NAME} SET status = 'manual-active', resolved_at = ?2,
+             updated_at = ?2 WHERE complex_key = ?1`
+        )
+        .bind(complexKey, now)
+        .run();
+      await addD1Event(db, complexKey, "manual_profile_saved", { sourceUrl: manual.sourceUrl || "", groups: manual.groups || [] }, now);
+    },
+    async listReviewCases() {
+      const result = await db
+        .prepare(
+          `SELECT c.*, m.profile_json AS manual_profile_json, m.source_url AS manual_source_url,
+                  m.note AS manual_note, m.updated_at AS manual_updated_at
+           FROM ${CASE_TABLE_NAME} c
+           LEFT JOIN ${MANUAL_TABLE_NAME} m ON m.complex_key = c.complex_key
+           ORDER BY CASE c.status WHEN 'open' THEN 0 WHEN 'manual-active' THEN 1 ELSE 2 END,
+                    c.last_detected_at DESC`
+        )
+        .all();
+      return (result.results || []).map((row) => ({
+        complexKey: row.complex_key,
+        status: row.status,
+        reasonCode: row.reason_code,
+        request: parseRecord(row.request_json) || {},
+        record: parseRecord(row.record_json) || {},
+        firstDetectedAt: row.first_detected_at,
+        lastDetectedAt: row.last_detected_at,
+        lastAutoRetryAt: row.last_auto_retry_at,
+        resolvedAt: row.resolved_at,
+        manualProfile: parseRecord(row.manual_profile_json),
+        manualSourceUrl: row.manual_source_url || "",
+        manualNote: row.manual_note || "",
+        manualUpdatedAt: row.manual_updated_at || "",
+      }));
+    },
+    async noteAutoRetry(complexKey) {
+      const now = new Date().toISOString();
+      await db.prepare(`UPDATE ${CASE_TABLE_NAME} SET last_auto_retry_at = ?2, updated_at = ?2 WHERE complex_key = ?1`).bind(complexKey, now).run();
+      await addD1Event(db, complexKey, "automatic_retry_requested", {}, now);
+    },
   };
 }
 
@@ -170,6 +276,10 @@ function createEdgeCacheStore(cache) {
       );
     },
     async noteAccess() {},
+    async getManualProfile() { return null; },
+    async putManualProfile() {},
+    async listReviewCases() { return []; },
+    async noteAutoRetry() {},
   };
 }
 
@@ -185,6 +295,10 @@ function createMemoryStore() {
       records.set(complexKey, record);
     },
     async noteAccess() {},
+    async getManualProfile() { return null; },
+    async putManualProfile() {},
+    async listReviewCases() { return []; },
+    async noteAutoRetry() {},
   };
 }
 
@@ -212,6 +326,38 @@ async function syncD1UsageStatus(db, complexKey, record, updatedAt) {
       updatedAt
     )
     .run();
+}
+
+async function syncD1ReviewCase(db, complexKey, record, updatedAt) {
+  const errorCode = String(record?.errorDetails?.resultCode || "");
+  const needsReview = record?.status === "upstream-pending" || record?.status === "failed";
+  if (needsReview) {
+    await db.prepare(
+      `INSERT INTO ${CASE_TABLE_NAME}
+        (complex_key, status, reason_code, request_json, record_json, first_detected_at, last_detected_at, updated_at)
+       VALUES (?1, 'open', ?2, ?3, ?4, ?5, ?5, ?5)
+       ON CONFLICT(complex_key) DO UPDATE SET
+         status = CASE WHEN ${CASE_TABLE_NAME}.status = 'manual-active' THEN 'manual-active' ELSE 'open' END,
+         reason_code = excluded.reason_code,
+         record_json = excluded.record_json,
+         last_detected_at = excluded.last_detected_at,
+         updated_at = excluded.updated_at`
+    ).bind(complexKey, errorCode, JSON.stringify({ metadata: record?.metadata || {}, source: record?.requestedSource || record?.source || {} }), JSON.stringify(record), updatedAt).run();
+    await addD1Event(db, complexKey, "automatic_calculation_failed", { status: record?.status, reasonCode: errorCode }, updatedAt);
+  }
+  if (record?.status === "ready") {
+    await db.prepare(
+      `UPDATE ${CASE_TABLE_NAME} SET status = 'auto-active', resolved_at = ?2, updated_at = ?2
+       WHERE complex_key = ?1 AND status <> 'manual-active'`
+    ).bind(complexKey, updatedAt).run();
+  }
+}
+
+async function addD1Event(db, complexKey, type, detail, createdAt) {
+  await db.prepare(
+    `INSERT INTO ${EVENT_TABLE_NAME} (complex_key, event_type, detail_json, created_at)
+     VALUES (?1, ?2, ?3, ?4)`
+  ).bind(complexKey, type, JSON.stringify(detail || {}), createdAt).run();
 }
 
 function toStoredRequest(requestData) {

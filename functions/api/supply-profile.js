@@ -67,6 +67,25 @@ export async function onRequestGet({ request, env }) {
   try {
     const lookup = parseLookupRequest(request);
     const store = await createSupplyProfileStore(env);
+    const manualProfile = await store.getManualProfile?.(lookup.complexKey);
+    if (manualProfile?.profile) {
+      const profile = manualProfile.profile;
+      if (lookup.expectedHouseholds) {
+        profile.householdValidation = buildHouseholdValidation({
+          profileUnitCount: Number(profile.unitCount) || 0,
+          expectedHouseholds: lookup.expectedHouseholds,
+          rentalHouseholds: Number(profile.rentalHouseholds) || 0,
+        });
+      }
+      return json({
+        status: "ready",
+        profile,
+        validation: profile.householdValidation || null,
+        storage: store.mode,
+        cacheHit: true,
+        source: "manual-verified",
+      });
+    }
     let record = await store.get(lookup.complexKey);
 
     if (isReusableReadyRecord(record, lookup.expectedHouseholds)) {

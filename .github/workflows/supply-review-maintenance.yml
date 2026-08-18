@@ -1,0 +1,22 @@
+name: Supply review maintenance
+
+on:
+  schedule:
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retry-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retry failed supply calculations and send Teams digest
+        env:
+          SUPPLY_ADMIN_TOKEN: ${{ secrets.SUPPLY_ADMIN_TOKEN }}
+        run: |
+          test -n "$SUPPLY_ADMIN_TOKEN"
+          curl --fail --silent --show-error --request POST \
+            --header "x-supply-admin-token: $SUPPLY_ADMIN_TOKEN" \
+            https://apt-price-viewer.pages.dev/api/admin/supply-maintenance
