@@ -11,12 +11,20 @@ export async function onRequestPost({ request, env }) {
     const store = await createSupplyProfileStore(env);
     const before = await store.listReviewCases();
     const retryResults = [];
-    for (const item of before.filter((caseItem) => caseItem.status === "open").slice(0, MAX_RETRIES_PER_RUN)) {
+    for (const item of before.filter((caseItem) => ["open", "manual-active"].includes(caseItem.status)).slice(0, MAX_RETRIES_PER_RUN)) {
       const retryRequest = buildRetryRequest(request.url, item);
       if (!retryRequest) continue;
       await store.noteAutoRetry(item.complexKey);
       const response = await calculateSupplyProfile({ request: retryRequest, env });
-      retryResults.push({ complexKey: item.complexKey, status: response.status });
+      const payload = await response.clone().json().catch(() => ({}));
+      if (item.status === "manual-active" && payload.status === "ready" && payload.profile) {
+        const comparison = compareProfiles(item.manualProfile?.profile, payload.profile);
+        if (comparison.matches) await store.promoteAutomaticProfile(item.complexKey, payload.profile);
+        else await store.noteAutomaticDifference(item.complexKey, comparison);
+        retryResults.push({ complexKey: item.complexKey, status: response.status, promotion: comparison.matches ? "auto-promoted" : "manual-kept" });
+      } else {
+        retryResults.push({ complexKey: item.complexKey, status: response.status });
+      }
     }
     const cases = await store.listReviewCases();
     const digest = buildDigest(cases, retryResults);
@@ -31,9 +39,23 @@ function buildRetryRequest(baseUrl, item) {
   const metadata = record.metadata || item.request?.metadata || {};
   if (!source.sigunguCd || !source.bjdongCd || !source.bun || !source.ji) return null;
   const url = new URL("/api/supply-profile", baseUrl);
-  const values = { complexKey: item.complexKey, ...source, ...metadata, retry: "1" };
+  const values = { complexKey: item.complexKey, ...source, ...metadata, retry: "1", maintenance: "1" };
   Object.entries(values).forEach(([key, value]) => { if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value)); });
   return new Request(url, { headers: { "x-supply-maintenance": "1" } });
+}
+
+function compareProfiles(manual, automatic) {
+  const manualGroups = manual?.groups || [];
+  const automaticGroups = automatic?.groups || [];
+  if (!manualGroups.length || manualGroups.length !== automaticGroups.length) {
+    return { matches: false, reason: "group-count-mismatch", manualCount: manualGroups.length, automaticCount: automaticGroups.length };
+  }
+  const differences = manualGroups.map((manualGroup) => {
+    const closest = automaticGroups.reduce((best, candidate) =>
+      !best || Math.abs(candidate.targetExclusiveArea - manualGroup.targetExclusiveArea) < Math.abs(best.targetExclusiveArea - manualGroup.targetExclusiveArea) ? candidate : best, null);
+    return { exclusiveArea: manualGroup.targetExclusiveArea, supplyDifference: Math.abs((closest?.representativeSupplyArea || 0) - manualGroup.representativeSupplyArea) };
+  });
+  return { matches: differences.every((item) => item.supplyDifference <= 0.5), reason: "supply-area-difference", differences };
 }
 
 function buildDigest(cases, retryResults) {

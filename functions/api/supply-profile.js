@@ -68,7 +68,7 @@ export async function onRequestGet({ request, env }) {
     const lookup = parseLookupRequest(request);
     const store = await createSupplyProfileStore(env);
     const manualProfile = await store.getManualProfile?.(lookup.complexKey);
-    if (manualProfile?.profile) {
+    if (manualProfile?.profile && getSearchParam(request, "maintenance") !== "1") {
       const profile = manualProfile.profile;
       if (lookup.expectedHouseholds) {
         profile.householdValidation = buildHouseholdValidation({

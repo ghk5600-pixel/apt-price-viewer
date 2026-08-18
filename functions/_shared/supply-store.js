@@ -253,6 +253,17 @@ function createD1Store(db) {
       await db.prepare(`UPDATE ${CASE_TABLE_NAME} SET last_auto_retry_at = ?2, updated_at = ?2 WHERE complex_key = ?1`).bind(complexKey, now).run();
       await addD1Event(db, complexKey, "automatic_retry_requested", {}, now);
     },
+    async promoteAutomaticProfile(complexKey, profile) {
+      const now = new Date().toISOString();
+      await db.prepare(`DELETE FROM ${MANUAL_TABLE_NAME} WHERE complex_key = ?1`).bind(complexKey).run();
+      await db.prepare(
+        `UPDATE ${CASE_TABLE_NAME} SET status = 'auto-active', resolved_at = ?2, updated_at = ?2 WHERE complex_key = ?1`
+      ).bind(complexKey, now).run();
+      await addD1Event(db, complexKey, "automatic_profile_promoted", { groups: profile?.groups || [] }, now);
+    },
+    async noteAutomaticDifference(complexKey, comparison) {
+      await addD1Event(db, complexKey, "automatic_profile_differs_from_manual", comparison, new Date().toISOString());
+    },
   };
 }
 
@@ -280,6 +291,8 @@ function createEdgeCacheStore(cache) {
     async putManualProfile() {},
     async listReviewCases() { return []; },
     async noteAutoRetry() {},
+    async promoteAutomaticProfile() {},
+    async noteAutomaticDifference() {},
   };
 }
 
@@ -299,6 +312,8 @@ function createMemoryStore() {
     async putManualProfile() {},
     async listReviewCases() { return []; },
     async noteAutoRetry() {},
+    async promoteAutomaticProfile() {},
+    async noteAutomaticDifference() {},
   };
 }
 
