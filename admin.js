@@ -41,6 +41,7 @@ function renderCases() {
     root.querySelector(".address").textContent = metadata.roadAddress || metadata.lotAddress || "주소 정보 없음";
     root.querySelector(".detected").textContent = `최근 감지 ${formatDate(item.lastDetectedAt)}`;
     root.querySelector(".facts").innerHTML = factHtml(item, metadata);
+    root.querySelector(".event-list").innerHTML = (item.events || []).map((event) => `<li><b>${escapeHtml(eventLabel(event.type))}</b> · ${formatDate(event.createdAt)}</li>`).join("") || "<li>기록 없음</li>";
     root.querySelector(".source-url").value = item.manualSourceUrl || "";
     root.querySelector(".note").value = item.manualNote || "";
     const groups = root.querySelector(".groups");
@@ -80,3 +81,4 @@ function authHeaders() { return { "x-supply-admin-token": token }; }
 function csv(value) { return `"${String(value ?? "").replaceAll('"', '""')}"`; }
 function formatDate(value) { return value ? new Date(value).toLocaleString("ko-KR") : "-"; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>\"]/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"})[ch]); }
+function eventLabel(type) { return ({ automatic_calculation_failed: "자동 계산 실패", manual_profile_saved: "수동값 저장", automatic_retry_requested: "자동 재시도", automatic_profile_promoted: "자동값 전환", automatic_profile_differs_from_manual: "자동값 차이 발견" })[type] || type; }

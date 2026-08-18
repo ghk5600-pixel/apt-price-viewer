@@ -232,6 +232,16 @@ function createD1Store(db) {
                     c.last_detected_at DESC`
         )
         .all();
+      const eventResult = await db.prepare(
+        `SELECT complex_key, event_type, detail_json, created_at FROM ${EVENT_TABLE_NAME}
+         ORDER BY created_at DESC LIMIT 500`
+      ).all();
+      const eventsByKey = new Map();
+      (eventResult.results || []).forEach((event) => {
+        const events = eventsByKey.get(event.complex_key) || [];
+        events.push({ type: event.event_type, detail: parseRecord(event.detail_json) || {}, createdAt: event.created_at });
+        eventsByKey.set(event.complex_key, events);
+      });
       return (result.results || []).map((row) => ({
         complexKey: row.complex_key,
         status: row.status,
@@ -246,6 +256,7 @@ function createD1Store(db) {
         manualSourceUrl: row.manual_source_url || "",
         manualNote: row.manual_note || "",
         manualUpdatedAt: row.manual_updated_at || "",
+        events: eventsByKey.get(row.complex_key) || [],
       }));
     },
     async noteAutoRetry(complexKey) {
