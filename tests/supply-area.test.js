@@ -155,6 +155,46 @@ test("페이지 경계를 넘는 세대 행을 한 세대로 합친다", () => {
   assert.equal(state.patterns[1].supplyArea, 111.72);
 });
 
+test("상세 용도명이 없는 공용 행도 주거공용면적으로 합산한다", () => {
+  const state = consumeBuildingAreaRows(
+    createCollectionState(),
+    [
+      row("unlabeled-common", "전유", 84.9953, "공동주택", "아파트", "101동"),
+      row("unlabeled-common", "공용", 26.77, "", "", "101동"),
+    ],
+    { isFinal: true }
+  );
+  const profile = buildSupplyProfile({
+    complexKey: "unlabeled-common-area",
+    source: {},
+    collectionState: state,
+  });
+
+  assert.equal(profile.groups[0].representativeSupplyArea, 111.7653);
+  assert.equal(profile.areaValidation.status, "matched");
+});
+
+test("해운대롯데캐슬스타 84타입의 누락 공용면적을 포함해 공급면적을 계산한다", () => {
+  const state = consumeBuildingAreaRows(
+    createCollectionState(),
+    [
+      row("lotte-castle-star-84", "전유", 84.9953, "공동주택", "아파트", "101동"),
+      row("lotte-castle-star-84", "공용", 7.3632, "", "계단실", "101동"),
+      // 오류 화면에서는 이 행이 누락되어 84.9953 + 7.3632 = 92.3585㎡로 계산됐다.
+      row("lotte-castle-star-84", "공용", 19.4068, "", "", "101동"),
+    ],
+    { isFinal: true }
+  );
+  const profile = buildSupplyProfile({
+    complexKey: "kapt:haeundae-lotte-castle-star",
+    source: {},
+    collectionState: state,
+  });
+
+  assert.equal(profile.groups[0].representativeSupplyArea, 111.7653);
+  assert.equal(profile.areaValidation.status, "matched");
+});
+
 test("여러 페이지에 흩어진 세대 행을 해시 키로 끝까지 합친다", () => {
   let state = consumeBuildingAreaRows(createCollectionState(), [
     row("unit-z", "전유", 84.95, "아파트", "", "101동"),

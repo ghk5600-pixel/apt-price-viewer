@@ -1,5 +1,5 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v17-residential-common-inclusive";
+  "supply-model-v18-common-fallback";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 export const MIN_SUPPLY_TO_EXCLUSIVE_RATIO = 1.1;
 export const MAX_SUPPLY_TO_EXCLUSIVE_RATIO = 1.8;
@@ -217,6 +217,7 @@ function consumePendingUnitRow(unit, row) {
   addUniqueValue(unit.buildingNames, String(row?.bldNm || "").trim());
   addUniqueValue(unit.dongNames, String(row?.dongNm || "").trim());
   const usage = normalizeText(row?.exposPubuseGbCdNm);
+  const purpose = rowPurpose(row);
   const area = toArea(row?.area);
   if (isRentalApartmentPurpose(rowPurpose(row))) {
     unit.isRentalApartment = true;
@@ -224,7 +225,7 @@ function consumePendingUnitRow(unit, row) {
   if (
     usage === "전유" &&
     area > 10 &&
-    isApartmentExclusivePurpose(rowPurpose(row)) &&
+    isApartmentExclusivePurpose(purpose) &&
     area > unit.exclusiveArea
   ) {
     unit.exclusiveArea = area;
@@ -233,7 +234,7 @@ function consumePendingUnitRow(unit, row) {
   if (
     usage === "공용" &&
     area > 0 &&
-    isResidentialCommonPurpose(rowPurpose(row))
+    (isResidentialCommonPurpose(purpose) || isUnlabeledCommonArea(row))
   ) {
     unit.residentialCommonArea += area;
     if (normalizeText(rowPurpose(row)).includes("대피소")) {
@@ -859,7 +860,22 @@ function weightedAverage(patterns, key) {
 }
 
 function rowPurpose(row) {
-  return `${row?.mainPurpsCdNm || ""} ${row?.etcPurps || ""}`.trim();
+  const detailedPurpose = `${row?.mainPurpsCdNm || ""} ${row?.etcPurps || ""}`.trim();
+  if (detailedPurpose) return detailedPurpose;
+
+  // 건축HUB can return a common-area row with only the exposure/use
+  // category populated. Treat an unlabeled "공용" row as residential
+  // common area; rows with an explicit purpose still go through the
+  // residential/non-residential term classifier above.
+  return String(row?.exposPubuseGbCdNm || "").trim();
+}
+
+function isUnlabeledCommonArea(row) {
+  return (
+    normalizeText(row?.exposPubuseGbCdNm) === "공용" &&
+    !String(row?.mainPurpsCdNm || "").trim() &&
+    !String(row?.etcPurps || "").trim()
+  );
 }
 
 function normalizeText(value) {
