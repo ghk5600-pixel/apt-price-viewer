@@ -1,8 +1,10 @@
 export const SUPPLY_CALCULATION_VERSION =
-  "supply-model-v18-common-fallback";
+  "supply-model-v19-low-exclusive-ratio";
 export const SQUARE_METERS_PER_PYEONG = 3.305785;
 export const MIN_SUPPLY_TO_EXCLUSIVE_RATIO = 1.1;
-export const MAX_SUPPLY_TO_EXCLUSIVE_RATIO = 1.8;
+// Plausibility guard: the verified Haeundae Honorsville ledger has
+// 39.6602 sqm exclusive + 36.0131 sqm common = 75.6733 sqm supply (1.908x).
+export const MAX_SUPPLY_TO_EXCLUSIVE_RATIO = 2;
 const MAX_SHELTER_COMPONENT_TO_EXCLUSIVE_RATIO = 0.5;
 
 export const STANDARD_AREA_GROUPS = [

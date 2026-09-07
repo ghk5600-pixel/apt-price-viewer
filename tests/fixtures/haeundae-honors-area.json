@@ -1,0 +1,122 @@
+[
+  {
+    "mgmBldrgstPk": "honors-standard",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "전유",
+    "mainPurpsCdNm": "아파트",
+    "etcPurps": "공동주택(아파트)",
+    "area": 84.9077
+  },
+  {
+    "mgmBldrgstPk": "honors-standard",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "아파트",
+    "etcPurps": "벽체",
+    "area": 7.1147
+  },
+  {
+    "mgmBldrgstPk": "honors-standard",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "아파트",
+    "etcPurps": "계단실, 피로티",
+    "area": 16.074
+  },
+  {
+    "mgmBldrgstPk": "honors-standard",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "부대시설",
+    "etcPurps": "기계, 전기실",
+    "area": 1.2155
+  },
+  {
+    "mgmBldrgstPk": "honors-standard",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "부대시설",
+    "etcPurps": "경로당, 보육시설,문고,주민공동시설,관리사무소,경비실",
+    "area": 1.3932
+  },
+  {
+    "mgmBldrgstPk": "honors-standard",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "부대시설",
+    "etcPurps": "지하주차장(지2~지1)",
+    "area": 44.0752
+  },
+  {
+    "mgmBldrgstPk": "honors-small",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동(임대)",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "부대시설",
+    "etcPurps": "기계, 전기실",
+    "area": 0.5678
+  },
+  {
+    "mgmBldrgstPk": "honors-small",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동(임대)",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "부대시설",
+    "etcPurps": "경로당, 보육시설,문고,주민공동시설,관리사무소,경비실",
+    "area": 0.6508
+  },
+  {
+    "mgmBldrgstPk": "honors-small",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동(임대)",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "부대시설",
+    "etcPurps": "지하주차장(지2~지1)",
+    "area": 20.5874
+  },
+  {
+    "mgmBldrgstPk": "honors-small",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동(임대)",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "전유",
+    "mainPurpsCdNm": "아파트",
+    "etcPurps": "공동주택(아파트)",
+    "area": 39.6602
+  },
+  {
+    "mgmBldrgstPk": "honors-small",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동(임대)",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "아파트",
+    "etcPurps": "벽체",
+    "area": 4.893
+  },
+  {
+    "mgmBldrgstPk": "honors-small",
+    "bldNm": "해운대 경남아너스빌",
+    "dongNm": "103동(임대)",
+    "hoNm": "fixture-unit",
+    "exposPubuseGbCdNm": "공용",
+    "mainPurpsCdNm": "아파트",
+    "etcPurps": "계단실, 피로티",
+    "area": 31.1201
+  }
+]

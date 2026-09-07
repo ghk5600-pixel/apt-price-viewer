@@ -1194,7 +1194,8 @@ export function formatCollectionError(details) {
     details.operation === "resolveBuildingLedgerSources"
       ? "동일 단지 탐색"
       : `${details.pageNo}페이지 조회`;
-  return `건축HUB ${stage} 지연 (${status}): ${
+  const outcome = details.retryable ? "지연" : "실패";
+  return `건축HUB ${stage} ${outcome} (${status}): ${
     details.resultMessage || "상세 메시지 없음"
   }`;
 }
