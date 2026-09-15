@@ -32,6 +32,15 @@ test("새로고침 뒤 저장된 실거래 loading 상태를 다시 조회 가�
   );
 });
 
+test("조회가 끝난 무거래 단지를 매칭 전으로 표시하지 않는다", () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionsBetween("function formatNoTradeStatus", "function renderChart"), context);
+  assert.equal(
+    vm.runInContext('formatNoTradeStatus({tradeStatus:"empty"})', context),
+    "최근 24개월 거래 없음"
+  );
+});
+
 test("공식 K-apt v4 목록과 v5 기본정보 주소를 사용한다", () => {
   assert.equal(buildAptListUrl({ serviceKey: "test", bjdCode: "2635010600" }).pathname, "/1613000/AptListService4/getLegaldongAptList4");
   assert.equal(buildAptBasisUrl({ serviceKey: "test", operation: "getAphusBassInfoV5", kaptCode: "test" }).pathname, "/1613000/AptBasisInfoServiceV5/getAphusBassInfoV5");

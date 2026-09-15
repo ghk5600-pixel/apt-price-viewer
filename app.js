@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.09.15-03";
+const APP_VERSION = "v2026.09.15-04";
 const APP_UPDATED_AT = "2026-09-15";
 function getKoreaToday(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -2407,7 +2407,7 @@ function renderDetail() {
 
   el.selectedDong.textContent = complex.dong;
   el.detailTitle.innerHTML = `${complex.name}<br /><span class="gradient-text">${
-    hasTradeData ? group.label : "실거래 매칭 전"
+    hasTradeData ? group.label : formatNoTradeStatus(complex)
   }</span>`;
   el.selectedAddress.textContent = complex.address;
   el.includeLowFloorToggle.checked = state.includeLowFloorsInAnalysis;
@@ -2552,6 +2552,13 @@ function renderPeriodAnalysis(areaGroupTransactions) {
   `;
 }
 
+function formatNoTradeStatus(complex) {
+  if (complex?.tradeStatus === "loading") return "실거래 조회 중";
+  if (complex?.tradeStatus === "empty") return "최근 24개월 거래 없음";
+  if (complex?.tradeStatus === "error") return "실거래 조회 실패";
+  return "실거래 매칭 전";
+}
+
 function renderChart(scopedTransactions) {
   const monthly = buildMonthlyMedian(scopedTransactions);
   const values = monthly.map((item) => item.value).filter((value) => value !== null);
@@ -2560,7 +2567,7 @@ function renderChart(scopedTransactions) {
   el.chartTitle.textContent = `${range.months}개월 가격 추이`;
   el.chartSubtitle.textContent = scopedTransactions.length
     ? `${group.label} 월별 중앙값 · 거래 없는 달은 선 연결 제외`
-    : "국토부 실거래 매칭 전";
+    : formatNoTradeStatus(getSelectedComplex());
 
   if (values.length < 2) {
     el.chartWrap.innerHTML = `<div class="empty-state">차트를 그리기에 거래 데이터가 부족합니다.</div>`;
@@ -2647,7 +2654,7 @@ function renderTransactions(scopedTransactions) {
   const group = getAreaGroupMeta(state.selectedAreaGroupId);
   el.transactionSubtitle.textContent = scopedTransactions.length
     ? `${group.label} 최근 거래 8건`
-    : "국토부 실거래 매칭 전";
+    : formatNoTradeStatus(getSelectedComplex());
 
   const rows = scopedTransactions
     .slice()
