@@ -378,11 +378,19 @@ function selectApartmentCandidates(ranked) {
   const buildingCandidates = apartmentCandidates.filter(
     (candidate) => candidate.operation === "getBrTitleInfo"
   );
-  const selectionPool = buildingCandidates.length
-    ? buildingCandidates
+  const contextAnchor = ranked.find((candidate) => isConfidentCandidate(candidate));
+  const relatedBuildingCandidates = contextAnchor
+    ? buildingCandidates.filter((candidate) =>
+        isRelatedCandidate(candidate, contextAnchor)
+      )
+    : buildingCandidates;
+  // A newly completed complex can have a matching aggregate title before its
+  // individual building titles appear in the API. Unrelated building titles
+  // in the same legal dong must not hide that aggregate title.
+  const selectionPool = relatedBuildingCandidates.length
+    ? relatedBuildingCandidates
     : apartmentCandidates;
 
-  const contextAnchor = ranked.find((candidate) => isConfidentCandidate(candidate));
   const apartmentAnchor =
     selectionPool.find((candidate) => isConfidentCandidate(candidate)) ||
     selectionPool.find((candidate) => isApartmentRescueCandidate(candidate));

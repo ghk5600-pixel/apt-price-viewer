@@ -223,6 +223,50 @@ test("단지명이 다르면 대표 지번이 같아도 동일 단지로 확정�
   assert.deepEqual(resolution.sources, []);
 });
 
+test("같은 법정동의 다른 동별 표제부가 신축 단지 총괄표제부를 가리지 않는다", async () => {
+  const requestedSource = source("43113", "11400", "0100", "0028");
+  const resolvedSource = source("43113", "11400", "3411", "0000");
+  const resolution = await resolveBuildingLedgerSources({
+    requestedSource,
+    metadata: {
+      complexName: "복대자이더스카이",
+      roadAddress: "충청북도 청주시 흥덕구 산단로 13",
+      approvalDate: "20260727",
+      expectedHouseholds: 715,
+    },
+    fetchPage: async (operation, requested) => {
+      if (requested.bun) return page([]);
+      if (operation === "getBrTitleInfo") {
+        return page([
+          titleRow({
+            source: source("43113", "11400", "0200", "0001"),
+            name: "관계없는아파트",
+            roadAddress: "충청북도 청주시 흥덕구 다른로 1",
+            households: 100,
+            approvalDate: "20000101",
+          }),
+        ]);
+      }
+      if (operation === "getBrRecapTitleInfo") {
+        return page([
+          titleRow({
+            source: resolvedSource,
+            name: "복대자이 더 스카이",
+            roadAddress: "충청북도 청주시 흥덕구 산단로 13 (복대동)",
+            households: 715,
+            approvalDate: "20260727",
+            etcPurpose: "공동주택(아파트)",
+          }),
+        ]);
+      }
+      return page([]);
+    },
+  });
+
+  assert.equal(resolution.status, "matched");
+  assert.equal(resolution.sources[0].bun, "3411");
+});
+
 test("건축HUB 법정동 탐색 URL에서는 선택항목인 지번을 생략한다", () => {
   const url = buildBuildingHubUrl({
     serviceKey: "test",
