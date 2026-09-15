@@ -256,6 +256,7 @@ test("같은 법정동의 다른 동별 표제부가 신축 단지 총괄표제�
             households: 715,
             approvalDate: "20260727",
             etcPurpose: "공동주택(아파트)",
+            extra: { totPkngCnt: 1089, vlRat: 499.43, bcRat: 68.75 },
           }),
         ]);
       }
@@ -265,6 +266,8 @@ test("같은 법정동의 다른 동별 표제부가 신축 단지 총괄표제�
 
   assert.equal(resolution.status, "matched");
   assert.equal(resolution.sources[0].bun, "3411");
+  assert.equal(resolution.candidates[0].parkingTotal, 1089);
+  assert.equal(resolution.candidates[0].floorAreaRatio, 499.43);
 });
 
 test("건축HUB 법정동 탐색 URL에서는 선택항목인 지번을 생략한다", () => {
@@ -300,6 +303,7 @@ function titleRow({
   mainPurpose = "공동주택",
   etcPurpose = "",
   dongName = "",
+  extra = {},
 }) {
   return {
     ...rowSource,
@@ -314,6 +318,7 @@ function titleRow({
     useAprDay: approvalDate,
     mainPurpsCdNm: mainPurpose,
     etcPurps: etcPurpose,
+    ...extra,
   };
 }
 

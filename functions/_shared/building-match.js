@@ -528,6 +528,12 @@ function toCandidateSummary(candidate) {
       candidate.row?.totHhldCnt,
       candidate.row?.householdCnt
     ),
+    parkingTotal: positiveNumber(candidate.row?.totPkngCnt),
+    floorAreaRatio: positiveNumber(candidate.row?.vlRat || candidate.row?.vlRatEstmTotAreaRat),
+    buildingCoverageRatio: positiveNumber(candidate.row?.bcRat),
+    landArea: positiveNumber(candidate.row?.platArea),
+    buildingArea: positiveNumber(candidate.row?.archArea),
+    grossFloorArea: positiveNumber(candidate.row?.totArea),
     source: candidate.source,
     operation: candidate.operation,
     scope: candidate.scope,
@@ -536,6 +542,11 @@ function toCandidateSummary(candidate) {
       candidate.componentType || classifyBuildingComponent(candidate.row),
     reasons: candidate.reasons,
   };
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 function discoveryEvidence(operation, scope, page, source = null) {

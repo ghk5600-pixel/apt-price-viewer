@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.09.15-01";
+const APP_VERSION = "v2026.09.15-02";
 const APP_UPDATED_AT = "2026-09-15";
 function getKoreaToday(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -25,7 +25,7 @@ const BUILDING_HUB_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
 const DEFAULT_KAKAO_JAVASCRIPT_KEY = "f1381fcba950abff23056942bd19d544";
 const ADMIN_QUERY_PARAM = "admin";
-const SUPPLY_CALCULATION_VERSION = "supply-model-v20-fresh-ledger-cache";
+const SUPPLY_CALCULATION_VERSION = "supply-model-v21-ledger-summary";
 const SUPPLY_PROFILE_POLL_DELAY = 200;
 const SUPPLY_PROFILE_MAX_POLLS = 500;
 const SUPPLY_PROFILE_CLIENT_RETRY_DELAYS = [1_000, 3_000, 10_000, 30_000];
@@ -1150,7 +1150,7 @@ function needsBasisInfo(complex) {
 
 function needsBuildingLedgerInfo(complex) {
   return (
-    Boolean(complex?.source === "kakao") &&
+    Boolean(isUserRegisteredSource(complex?.source)) &&
     Boolean(complex.legalDongFullCode || complex.lat || complex.lng) &&
     !["loading", "loaded", "empty"].includes(complex.buildingLedgerStatus) &&
     (!Number.isFinite(complex.floorAreaRatio) || !Number.isFinite(complex.buildingCoverageRatio))
@@ -1663,6 +1663,7 @@ async function pollSupplyProfile(complex, params, options = {}) {
     }
     if (payload.status === "ready" && payload.profile) {
       complex.supplyProfile = payload.profile;
+      applySupplyLedgerSummary(complex, payload.profile);
       complex.supplyProfileStatus = "ready";
       complex.supplyProfileProgress = 100;
       complex.supplyProfileMessage = formatSupplyProfileReadyMessage(payload);
@@ -3246,6 +3247,9 @@ function formatSupplyProfileMessage(complex, transaction) {
   if (complex?.supplyProfileStatus === "error") {
     return complex.supplyProfileMessage || "공급면적 조회 실패";
   }
+  if (complex?.supplyProfileStatus === "ready") {
+    return "공급면적 계산 완료 · 실거래가 없어 평당가를 계산할 수 없습니다.";
+  }
   return "공급면적 프로필 준비 전";
 }
 
@@ -3268,7 +3272,31 @@ function formatSupplyProfileShortStatus(complex, transaction) {
     const failedPage = String(complex.supplyProfileMessage || "").match(/(\d+)페이지/);
     return failedPage ? `${failedPage[1]}페이지 오류` : "조회 실패";
   }
+  if (complex?.supplyProfileStatus === "ready") return "거래 없음";
   return "계산 전";
+}
+
+function applySupplyLedgerSummary(complex, profile) {
+  const summary = profile?.ledgerMatch?.candidates?.[0];
+  if (!summary) return;
+  [
+    ["floorAreaRatio", summary.floorAreaRatio],
+    ["buildingCoverageRatio", summary.buildingCoverageRatio],
+    ["landArea", summary.landArea],
+    ["buildingArea", summary.buildingArea],
+    ["grossFloorArea", summary.grossFloorArea],
+    ["parkingTotal", summary.parkingTotal],
+  ].forEach(([key, value]) => {
+    if (Number.isFinite(Number(value)) && Number(value) > 0) {
+      complex[key] = Number(value);
+    }
+  });
+  if (Number(complex.parkingTotal) > 0 && Number(complex.households) > 0) {
+    complex.parkingPerHousehold = roundTo(
+      Number(complex.parkingTotal) / Number(complex.households),
+      2
+    );
+  }
 }
 
 function delay(milliseconds) {
