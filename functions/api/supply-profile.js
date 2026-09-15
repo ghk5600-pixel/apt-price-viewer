@@ -157,7 +157,13 @@ export async function onRequestGet({ request, env }) {
       if (!requestData.forceRetry) {
         return progressResponse(record, store.mode, 502);
       }
-      resumeRecord(record);
+      // A completed but invalid collection cannot be repaired by replaying its
+      // already-consumed final page. Explicit retry must fetch fresh rows.
+      if (record.errorDetails?.resultCode === "ABNORMAL_SUPPLY_AREA") {
+        resetResolution(record);
+      } else {
+        resumeRecord(record);
+      }
     }
 
     const leaseUntil = Date.parse(record.leaseUntil || "");
@@ -295,13 +301,8 @@ export function createRecord(requestData) {
 }
 
 export function shouldResetRecord(record, requestData) {
-  const expectedHouseholdsChanged =
-    record.status === "ready" &&
-    requestData.expectedHouseholds &&
-    Number(record.profile?.unitCount) !== Number(requestData.expectedHouseholds);
   return (
     record.calculationVersion !== SUPPLY_CALCULATION_VERSION ||
-    expectedHouseholdsChanged ||
     (record.status !== "ready" && record.sourceSignature !== requestData.sourceSignature) ||
     (record.status !== "ready" && record.collectionProtocolVersion !== COLLECTION_PROTOCOL_VERSION)
   );
@@ -315,10 +316,9 @@ function isReusableReadyRecord(record, expectedHouseholds) {
   ) {
     return false;
   }
-  return (
-    !expectedHouseholds ||
-    Number(record.profile.unitCount) === Number(expectedHouseholds)
-  );
+  // Counts affect validation, not the underlying ledger calculation. Reuse
+  // collected evidence and report a mismatch instead of repeatedly recollecting.
+  return true;
 }
 
 export async function advanceCollection(record, serviceKey, options = {}) {
@@ -1152,6 +1152,7 @@ export function resetResolution(record) {
   record.sourceDiscovery = null;
   record.nextRetryAt = "";
   record.leaseUntil = "";
+  clearCollectionError(record);
 }
 
 export function clearCollectionError(record) {

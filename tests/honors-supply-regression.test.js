@@ -39,6 +39,18 @@ test("이전 계산 버전의 실패 캐시를 재수집하고 화면 버전도 
   assert.equal(app.match(/const SUPPLY_CALCULATION_VERSION = "([^"]+)"/)[1], SUPPLY_CALCULATION_VERSION);
 });
 
+test("기대 세대수만 달라져도 정상 공급면적 캐시는 보존한다", () => {
+  const record = {
+    status: "ready",
+    calculationVersion: SUPPLY_CALCULATION_VERSION,
+    profile: { unitCount: 828 },
+  };
+  assert.equal(
+    shouldResetRecord(record, { expectedHouseholds: 900, sourceSignature: "same" }),
+    false
+  );
+});
+
 for (const abnormal of [false, true]) {
   test(`공급면적 API: ${abnormal ? "상한 초과는 최종 실패" : "경남아너스빌 실제 면적은 ready"}`, async () => {
     const originalFetch = globalThis.fetch;
@@ -58,6 +70,13 @@ for (const abnormal of [false, true]) {
         assert.equal(payload.errorDetails.resultCode, "ABNORMAL_SUPPLY_AREA");
         assert.equal(payload.errorDetails.retryable, false);
         assert.match(formatCollectionError(payload.errorDetails), /실패/);
+        input.splice(0, input.length, ...rows);
+        const retryResponse = await onRequestGet({
+          request: new Request(`http://localhost/api/supply-profile?complexKey=honors-${abnormal}&sigunguCd=26350&bjdongCd=10600&platGbCd=0&bun=1788&ji=0000&expectedHouseholds=2&retry=1`),
+          env: { MOLIT_SERVICE_KEY: "test" },
+        });
+        assert.equal(retryResponse.status, 200);
+        assert.equal((await retryResponse.json()).status, "ready");
       } else {
         assert.equal(payload.profile.unitCount, 2);
         assert.equal(payload.profile.areaValidation.status, "matched");

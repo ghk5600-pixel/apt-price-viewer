@@ -17,7 +17,10 @@ export class SupplyAdminError extends Error {
 }
 
 export function adminError(error) {
-  return json({ error: error?.message || "관리자 요청 처리에 실패했습니다." }, error?.status || 500);
+  return json(
+    { error: error?.message || "관리자 요청 처리에 실패했습니다." },
+    { status: error?.status || 500 }
+  );
 }
 
 export async function readJson(request) {
