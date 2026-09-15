@@ -25,7 +25,7 @@ export async function onRequestGet({ request, env }) {
       return errorJson(resultMsg || `RTMS API error: ${resultCode}`, 502);
     }
 
-    return json({ items: parseRtmsXml(xmlText) });
+    return json({ items: parseRtmsXml(xmlText), totalCount: Number(textFromXml(xmlText, "totalCount")) || 0 });
   } catch (error) {
     return errorJson(error.message || "RTMS request failed.", 500);
   }

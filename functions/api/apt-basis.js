@@ -8,12 +8,14 @@ import {
   requireServiceKey,
 } from "../_shared/molit.js";
 
-const ALLOWED_OPERATIONS = new Set(["getAphusBassInfoV4", "getAphusDtlInfoV4"]);
+const ALLOWED_OPERATIONS = new Set(["getAphusBassInfoV5", "getAphusDtlInfoV5"]);
 
 export async function onRequestGet({ request, env }) {
   try {
     const serviceKey = requireServiceKey(env);
-    const operation = getSearchParam(request, "operation");
+    const requestedOperation = getSearchParam(request, "operation");
+    // Existing open tabs can still send the previous operation names.
+    const operation = ({ getAphusBassInfoV4: "getAphusBassInfoV5", getAphusDtlInfoV4: "getAphusDtlInfoV5" })[requestedOperation] || requestedOperation;
     const kaptCode = getSearchParam(request, "kaptCode");
     assertRequired({ operation, kaptCode });
     if (!ALLOWED_OPERATIONS.has(operation)) {

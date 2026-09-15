@@ -1,17 +1,25 @@
-const APP_VERSION = "v2026.08.11-01";
-const APP_UPDATED_AT = "2026-08-11";
-const REFERENCE_MONTH = "2026-07";
+const APP_VERSION = "v2026.09.15-01";
+const APP_UPDATED_AT = "2026-09-15";
+function getKoreaToday(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const part = (type) => parts.find((item) => item.type === type).value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function getReferenceMonth() { return getKoreaToday().slice(0, 7); }
 const MAX_FAVORITES = 20;
 const FAVORITES_KEY = "apt-monitor-favorites-v1";
 const CUSTOM_COMPLEXES_KEY = "apt-monitor-custom-complexes-v1";
 const API_CONFIG_KEY = "apt-monitor-api-config-v1";
 const RTMS_API_ENDPOINT = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade";
 const RTMS_API_OPERATION = "getRTMSDataSvcAptTrade";
-const APT_LIST_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptListService3";
-const APT_LIST_LEGALDONG_OPERATION = "getLegaldongAptList3";
-const APT_BASIS_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV4";
-const APT_BASIS_BASIC_OPERATION = "getAphusBassInfoV4";
-const APT_BASIS_DETAIL_OPERATION = "getAphusDtlInfoV4";
+const APT_LIST_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptListService4";
+const APT_LIST_LEGALDONG_OPERATION = "getLegaldongAptList4";
+const APT_BASIS_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV5";
+const APT_BASIS_BASIC_OPERATION = "getAphusBassInfoV5";
+const APT_BASIS_DETAIL_OPERATION = "getAphusDtlInfoV5";
 const BUILDING_HUB_API_ENDPOINT = "https://apis.data.go.kr/1613000/BldRgstHubService";
 const BUILDING_HUB_OPERATIONS = ["getBrRecapTitleInfo", "getBrTitleInfo"];
 const KAKAO_SDK_SRC = "https://dapi.kakao.com/v2/maps/sdk.js";
@@ -1856,7 +1864,7 @@ function extractBuildingLedgerParkingTotal(items) {
 }
 
 async function fetchRtmsItemsForComplex(complex) {
-  const months = buildMonthRange(REFERENCE_MONTH, 24).map((month) => month.replace("-", ""));
+  const months = buildMonthRange(getReferenceMonth(), 24).map((month) => month.replace("-", ""));
   const batches = await Promise.all(
     months.map((dealYmd) => fetchRtmsMonth({ lawdCd: complex.legalDongCode, dealYmd }))
   );
@@ -1864,16 +1872,29 @@ async function fetchRtmsItemsForComplex(complex) {
 }
 
 async function fetchRtmsMonth({ lawdCd, dealYmd }) {
-  const response = await fetch(buildRtmsRequestUrl({ lawdCd, dealYmd, numOfRows: 1000 }));
-  if (!response.ok) {
-    throw new Error(`국토부 API 응답 오류: ${response.status}`);
+  const items = [];
+  for (let pageNo = 1; ; pageNo += 1) {
+    const response = await fetch(buildRtmsRequestUrl({ lawdCd, dealYmd, pageNo, numOfRows: 1000 }));
+    if (!response.ok) throw new Error(`국토부 API 응답 오류: ${response.status}`);
+    let pageItems, totalCount;
+    if (shouldUseBackendApi()) {
+      const payload = await response.json();
+      pageItems = payload.items || [];
+      totalCount = Number(payload.totalCount);
+    } else {
+      const xmlText = await response.text();
+      pageItems = parseRtmsXml(xmlText);
+      const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+      totalCount = Number(textFromXml(doc, "totalCount"));
+    }
+    items.push(...pageItems);
+    if (!pageItems.length || (totalCount > 0 ? items.length >= totalCount : pageItems.length < 1000)) break;
   }
-  if (shouldUseBackendApi()) {
-    const payload = await response.json();
-    return payload.items || [];
-  }
-  const xmlText = await response.text();
-  return parseRtmsXml(xmlText);
+  return items.filter((item) => !isCancelledTrade(item));
+}
+
+function isCancelledTrade(item) {
+  return ["O", "Y", "1"].includes(String(item.cdealType || "").trim().toUpperCase()) || Boolean(String(item.cdealDay || "").trim());
 }
 
 function buildRtmsRequestUrl(args) {
@@ -1907,6 +1928,8 @@ function parseRtmsXml(xmlText) {
     sggCd: textFromXml(item, "sggCd"),
     umdNm: textFromXml(item, "umdNm"),
     aptDong: textFromXml(item, "aptDong"),
+    cdealType: textFromXml(item, "cdealType"),
+    cdealDay: textFromXml(item, "cdealDay"),
   }));
 }
 
@@ -2998,7 +3021,7 @@ function getAreaGroupsForControls() {
 }
 
 function buildTransactions(complex) {
-  const months = buildMonthRange(REFERENCE_MONTH, 24);
+  const months = buildMonthRange(getReferenceMonth(), 24);
   const transactions = [];
   let runningId = 1;
 
@@ -3051,7 +3074,7 @@ function buildMonthRange(referenceMonth, count) {
 }
 
 function buildMonthlyMedian(transactions) {
-  const months = buildMonthRange(REFERENCE_MONTH, getRangeMeta().months);
+  const months = buildMonthRange(getReferenceMonth(), getRangeMeta().months);
   return months.map((month) => {
     const values = transactions.filter((tx) => tx.month === month).map((tx) => tx.priceEok);
     return {
@@ -3062,7 +3085,7 @@ function buildMonthlyMedian(transactions) {
 }
 
 function buildPeriodAnalysis(transactions, includeLowFloors) {
-  const referenceDate = startOfDay(new Date());
+  const referenceDate = parseTransactionDate(getKoreaToday());
   const recent3Start = addMonthsClamped(referenceDate, -3);
   const recent6Start = addMonthsClamped(referenceDate, -6);
   const previous6Start = addMonthsClamped(referenceDate, -12);
@@ -3165,12 +3188,12 @@ function calculateMetrics(transactions) {
 }
 
 function filterLastMonths(transactions, monthsBack) {
-  const months = buildMonthRange(REFERENCE_MONTH, monthsBack);
+  const months = buildMonthRange(getReferenceMonth(), monthsBack);
   return transactions.filter((tx) => months.includes(tx.month));
 }
 
 function filterTransactionsBySelectedRange(transactions) {
-  const months = buildMonthRange(REFERENCE_MONTH, getRangeMeta().months);
+  const months = buildMonthRange(getReferenceMonth(), getRangeMeta().months);
   return transactions.filter((tx) => months.includes(tx.month));
 }
 

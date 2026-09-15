@@ -1,6 +1,6 @@
 const RTMS_API_ENDPOINT = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade";
-const APT_LIST_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptListService3/getLegaldongAptList3";
-const APT_BASIS_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV4";
+const APT_LIST_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptListService4/getLegaldongAptList4";
+const APT_BASIS_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV5";
 const BUILDING_HUB_API_ENDPOINT = "https://apis.data.go.kr/1613000/BldRgstHubService";
 
 export function json(data, init = {}) {
@@ -44,10 +44,15 @@ export async function fetchJsonApi(url) {
     headers: { accept: "application/json, text/plain, */*" },
     signal: AbortSignal.timeout(30000),
   });
-  if (!response.ok) {
-    throw new Error(`MOLIT API responded with ${response.status}.`);
-  }
   const text = await response.text();
+  if (!response.ok) {
+    // Only return known error fields. Never expose the request URL or API key.
+    const code = textFromXml(text, "returnReasonCode") || textFromXml(text, "resultCode");
+    const message = textFromXml(text, "returnAuthMsg") || textFromXml(text, "errMsg") || textFromXml(text, "resultMsg");
+    const key = url.searchParams.get("serviceKey") || "";
+    const detail = [code, message].filter(Boolean).join(": ").replaceAll(key || "__absent_key__", "[redacted]").replaceAll(key ? encodeURIComponent(key) : "__absent_key__", "[redacted]").slice(0, 240);
+    throw new Error(`MOLIT API responded with ${response.status}.${detail ? ` ${detail}` : ""}`);
+  }
   if (!text.trim()) return {};
   return parseJsonPreservingLongIntegers(text);
 }
@@ -181,6 +186,8 @@ export function parseRtmsXml(xmlText) {
       sggCd: textFromXml(itemText, "sggCd"),
       umdNm: textFromXml(itemText, "umdNm"),
       aptDong: textFromXml(itemText, "aptDong"),
+      cdealType: textFromXml(itemText, "cdealType"),
+      cdealDay: textFromXml(itemText, "cdealDay"),
     });
   }
   return items;

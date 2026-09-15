@@ -4,7 +4,7 @@
 
 ## 현재 버전
 
-- 버전: `v2026.08.11-01`
+- 버전: `v2026.09.15-01`
 - 수정일: `2026-08-11`
 - 상태: 공개 버전
 
@@ -108,8 +108,8 @@ API 설정 클릭
 
 ```text
 https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade
-https://apis.data.go.kr/1613000/AptListService3
-https://apis.data.go.kr/1613000/AptBasisInfoServiceV4
+https://apis.data.go.kr/1613000/AptListService4
+https://apis.data.go.kr/1613000/AptBasisInfoServiceV5
 https://apis.data.go.kr/1613000/HsPmsHubService
 https://apis.data.go.kr/1613000/ArchPmsHubService
 https://apis.data.go.kr/1613000/BldRgstHubService

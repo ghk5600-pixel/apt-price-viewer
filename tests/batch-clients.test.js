@@ -69,7 +69,7 @@ test("K-apt 서울 시도 단지 목록을 CSV 없이 마지막 페이지까지 
   assert.equal(requestedUrls.length, 2);
   assert.ok(
     requestedUrls.every((url) =>
-      url.pathname.endsWith("/getSidoAptList3")
+      url.pathname.endsWith("/getSidoAptList4")
     )
   );
   assert.deepEqual(

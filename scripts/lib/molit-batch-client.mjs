@@ -6,11 +6,11 @@ import {
 } from "../../functions/_shared/molit.js";
 
 const APT_LIST_BY_DONG_ENDPOINT =
-  "https://apis.data.go.kr/1613000/AptListService3/getLegaldongAptList3";
+  "https://apis.data.go.kr/1613000/AptListService4/getLegaldongAptList4";
 const APT_LIST_BY_SIDO_ENDPOINT =
-  "https://apis.data.go.kr/1613000/AptListService3/getSidoAptList3";
+  "https://apis.data.go.kr/1613000/AptListService4/getSidoAptList4";
 const APT_BASIS_ENDPOINT =
-  "https://apis.data.go.kr/1613000/AptBasisInfoServiceV4/getAphusBassInfoV4";
+  "https://apis.data.go.kr/1613000/AptBasisInfoServiceV5/getAphusBassInfoV5";
 const PERMIT_ENDPOINTS = {
   "building-permit": "https://apis.data.go.kr/1613000/ArchPmsHubService",
   "housing-permit": "https://apis.data.go.kr/1613000/HsPmsHubService",
