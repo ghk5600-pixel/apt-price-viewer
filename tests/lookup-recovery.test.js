@@ -16,6 +16,22 @@ test("한국 시간 월 경계와 연도 변경을 현재 날짜에 반영한다
   assert.match(app, /parseTransactionDate\(getKoreaToday\(\)\)/);
 });
 
+test("새로고침 뒤 저장된 실거래 loading 상태를 다시 조회 가능하게 복구한다", () => {
+  const context = vm.createContext({ Array });
+  vm.runInContext(
+    functionsBetween("function normalizeStoredTradeStatus", "function loadCustomComplexes"),
+    context
+  );
+  assert.equal(
+    vm.runInContext('normalizeStoredTradeStatus({tradeStatus:"loading",realTransactions:[]})', context),
+    "idle"
+  );
+  assert.equal(
+    vm.runInContext('normalizeStoredTradeStatus({tradeStatus:"loading",realTransactions:[{}]})', context),
+    "loaded"
+  );
+});
+
 test("공식 K-apt v4 목록과 v5 기본정보 주소를 사용한다", () => {
   assert.equal(buildAptListUrl({ serviceKey: "test", bjdCode: "2635010600" }).pathname, "/1613000/AptListService4/getLegaldongAptList4");
   assert.equal(buildAptBasisUrl({ serviceKey: "test", operation: "getAphusBassInfoV5", kaptCode: "test" }).pathname, "/1613000/AptBasisInfoServiceV5/getAphusBassInfoV5");

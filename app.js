@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.09.15-02";
+const APP_VERSION = "v2026.09.15-03";
 const APP_UPDATED_AT = "2026-09-15";
 function getKoreaToday(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -3420,6 +3420,18 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function normalizeStoredTradeStatus(complex) {
+  if (complex?.tradeStatus !== "loading") {
+    return complex?.tradeStatus ||
+      (Array.isArray(complex?.realTransactions) && complex.realTransactions.length
+        ? "loaded"
+        : "idle");
+  }
+  return Array.isArray(complex.realTransactions) && complex.realTransactions.length
+    ? "loaded"
+    : "idle";
+}
+
 function loadCustomComplexes() {
   try {
     const saved = JSON.parse(localStorage.getItem(CUSTOM_COMPLEXES_KEY) || "[]");
@@ -3444,12 +3456,16 @@ function loadCustomComplexes() {
         landArea: parseNumber(complex.landArea),
         buildingArea: parseNumber(complex.buildingArea),
         grossFloorArea: parseNumber(complex.grossFloorArea),
-        buildingLedgerStatus: complex.buildingLedgerStatus || "idle",
+        basisStatus: complex.basisStatus === "loading" ? "idle" : complex.basisStatus || "idle",
+        buildingLedgerStatus:
+          complex.buildingLedgerStatus === "loading"
+            ? "idle"
+            : complex.buildingLedgerStatus || "idle",
         buildingLedgerError: complex.buildingLedgerError || "",
         lastBuildingLedgerSync: complex.lastBuildingLedgerSync || "",
         supplyProfileStatus:
           complex.supplyProfile?.calculationVersion === SUPPLY_CALCULATION_VERSION
-            ? complex.supplyProfileStatus || "ready"
+            ? "ready"
             : "idle",
         supplyProfileProgress: Number(complex.supplyProfileProgress) || 0,
         supplyProfileMessage: complex.supplyProfileMessage || "공급면적 조회 전",
@@ -3462,17 +3478,14 @@ function loadCustomComplexes() {
         pendingSupplyRegistrationToken: complex.pendingSupplyRegistrationToken || "",
         lastBasisSync: complex.lastBasisSync || "",
         realTransactions: Array.isArray(complex.realTransactions) ? complex.realTransactions : [],
-        tradeStatus:
-          complex.tradeStatus ||
-          (Array.isArray(complex.realTransactions) && complex.realTransactions.length ? "loaded" : "idle"),
+        tradeStatus: normalizeStoredTradeStatus(complex),
         tradeMessage: complex.tradeMessage || "국토부 실거래 조회 전",
         tags:
           isUserRegisteredSource(complex.source)
             ? updateAptListTags(
                 updateTradeTags(
                   complex.tags || [],
-                  complex.tradeStatus ||
-                    (Array.isArray(complex.realTransactions) && complex.realTransactions.length ? "loaded" : "idle")
+                  normalizeStoredTradeStatus(complex)
                 ),
                 complex.kaptCode ? "matched" : Array.isArray(complex.aptListCandidates) && complex.aptListCandidates.length ? "candidates" : "idle"
               )
