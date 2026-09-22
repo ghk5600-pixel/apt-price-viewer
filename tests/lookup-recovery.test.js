@@ -62,6 +62,72 @@ test("마지막 거래 페이지까지 수집하고 해제 거래만 제외한�
   assert.deepEqual(Array.from(result, (row) => row.id), [1, 3]);
 });
 
+test("읍 아래 리가 포함된 실거래를 단지명과 지번으로 안전하게 매칭한다", () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionsBetween("function isRtmsItemMatch", "function rtmsItemToTransaction"), context);
+  vm.runInContext(functionsBetween("function normalizeApartmentName", "function updateTradeTags"), context);
+  vm.runInContext(functionsBetween("function normalize(value)", "function stringSimilarity"), context);
+
+  const cases = [
+    {
+      complex: {
+        name: "중흥S-클래스 에듀포레",
+        kaptName: "중흥S-클래스 에듀포레",
+        dong: "산동읍",
+        lotNumber: "1116",
+      },
+      item: {
+        aptNm: "구미확장단지중흥S-클래스에듀포레",
+        umdNm: "산동읍 인덕리",
+        jibun: "1116",
+      },
+    },
+    {
+      complex: {
+        name: "우미린센트럴파크",
+        kaptName: "우미린센트럴파크",
+        dong: "산동읍",
+        lotNumber: "1383",
+      },
+      item: {
+        aptNm: "우미린센트럴파크",
+        umdNm: "산동읍 신당리",
+        jibun: "1383",
+      },
+    },
+  ];
+
+  for (const { complex, item } of cases) {
+    context.complex = complex;
+    context.item = item;
+    assert.equal(vm.runInContext("isRtmsItemMatch(complex, item)", context), true);
+  }
+});
+
+test("부모 읍만 같은 다른 리의 동명 단지는 지번이 다르면 매칭하지 않는다", () => {
+  const context = vm.createContext({
+    complex: {
+      name: "우미린센트럴파크",
+      dong: "산동읍",
+      lotNumber: "1383",
+    },
+    item: {
+      aptNm: "우미린센트럴파크",
+      umdNm: "산동읍 다른리",
+      jibun: "999",
+    },
+  });
+  vm.runInContext(functionsBetween("function isRtmsItemMatch", "function rtmsItemToTransaction"), context);
+  vm.runInContext(functionsBetween("function normalizeApartmentName", "function updateTradeTags"), context);
+  vm.runInContext(functionsBetween("function normalize(value)", "function stringSimilarity"), context);
+
+  assert.equal(vm.runInContext("isRtmsItemMatch(complex, item)", context), false);
+
+  context.complex.legalDongName = "산동읍 신당리";
+  context.item.jibun = "1383";
+  assert.equal(vm.runInContext("isRtmsItemMatch(complex, item)", context), false);
+});
+
 test("서버 파서는 해제 필드를 보존한다", () => {
   const [item] = parseRtmsXml("<item><aptNm>단지</aptNm><cdealType>O</cdealType><cdealDay>26.09.01</cdealDay></item>");
   assert.equal(item.cdealType, "O");

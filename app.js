@@ -1,5 +1,5 @@
-const APP_VERSION = "v2026.09.15-04";
-const APP_UPDATED_AT = "2026-09-15";
+const APP_VERSION = "v2026.09.22-01";
+const APP_UPDATED_AT = "2026-09-22";
 function getKoreaToday(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
@@ -1264,6 +1264,9 @@ function enrichComplexLocationFromKakao(complex) {
           complex.legalDongFullCode = legalRegion.code;
           complex.legalDongCode = legalRegion.code.slice(0, 5);
           complex.dong = legalRegion.region_3depth_name || complex.dong;
+          complex.legalDongName = [legalRegion.region_3depth_name, legalRegion.region_4depth_name]
+            .filter(Boolean)
+            .join(" ") || complex.legalDongName || complex.dong;
           complex.city = [legalRegion.region_1depth_name, legalRegion.region_2depth_name]
             .filter(Boolean)
             .join(" ");
@@ -1947,17 +1950,33 @@ function isRtmsItemMatch(complex, item) {
   const nameMatch = itemName && complexNames.some((complexName) => {
     return complexName.includes(itemName) || itemName.includes(complexName);
   });
-  const dongMatch =
-    !complex.dong ||
-    complex.dong.includes("확인 필요") ||
-    complex.dong === item.umdNm ||
-    normalize(complex.dong).includes(normalize(item.umdNm));
   const lotMatch =
     complex.lotNumber &&
     item.jibun &&
     normalizeLotNumber(complex.lotNumber) === normalizeLotNumber(item.jibun);
+  const dongMatch = isRtmsDongMatch(complex, item, { nameMatch, lotMatch });
 
   return (nameMatch && dongMatch) || (lotMatch && dongMatch);
+}
+
+function isRtmsDongMatch(complex, item, { nameMatch, lotMatch }) {
+  const sourceDong = complex.legalDongName || complex.dong || "";
+  if (!sourceDong || sourceDong.includes("확인 필요")) return true;
+
+  const itemDong = normalize(item.umdNm || "");
+  if (!itemDong) return false;
+
+  const complexDong = normalize(sourceDong);
+  if (!complexDong) return true;
+  if (complexDong === itemDong) return true;
+
+  // Kakao의 3단계 지역명은 읍/면까지만 내려오고 국토부 거래에는 리가 붙을 수 있다.
+  // 리를 확보하지 못한 경우에는 단지명과 지번까지 모두 일치할 때만 부모 읍/면을 허용한다.
+  const parentRuralDongMatch =
+    /(?:읍|면)$/.test(complexDong) &&
+    itemDong.startsWith(complexDong) &&
+    /리$/.test(itemDong);
+  return Boolean(parentRuralDongMatch && nameMatch && lotMatch);
 }
 
 function rtmsItemToTransaction(complex, item, index) {
