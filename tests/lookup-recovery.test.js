@@ -32,6 +32,54 @@ test("새로고침 뒤 저장된 실거래 loading 상태를 다시 조회 가�
   );
 });
 
+test("실거래는 한국 시간 매월 1일과 15일 이후 재조회한다", () => {
+  const context = vm.createContext({ Date, Number, Intl, TRADE_RETRY_INTERVAL_MS: 24 * 60 * 60 * 1000 });
+  vm.runInContext(functionsBetween("function getKoreaToday", "const MAX_FAVORITES"), context);
+  vm.runInContext(functionsBetween("function getLatestTradeRefreshBoundary", "async function refreshAptIdentityInfoForComplex"), context);
+  context.complex = { tradeStatus: "loaded", lastTradeSync: "2026-10-08T00:00:00Z" };
+  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-14T14:59:59Z"))', context), false);
+  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-14T15:00:00Z"))', context), true);
+  context.complex.lastTradeSync = "2026-10-14T15:01:00Z";
+  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-15T00:00:00Z"))', context), false);
+  context.complex = { tradeStatus: "empty", lastTradeSync: "2026-09-16T00:00:00Z" };
+  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-09-30T15:00:00Z"))', context), true);
+  context.complex = { tradeStatus: "error", realTransactions: [{}], lastTradeSync: "2026-10-08T00:00:00Z", lastTradeAttempt: "2026-10-14T15:05:00Z" };
+  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-14T16:00:00Z"))', context), false);
+  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-15T16:00:00Z"))', context), true);
+});
+
+test("갱신일에는 모든 관심단지의 거래만 순차 조회한다", async () => {
+  const calls = [];
+  const context = vm.createContext({
+    state: { favorites: ["a", "b", "c"], selectedComplexId: "b", tradeRefreshRunning: false },
+    COMPLEXES: ["a", "b", "c"].map((id) => ({ id, source: "kakao" })),
+    isUserRegisteredSource: () => true,
+    needsTradeRefresh: () => true,
+    refreshRealTransactionsForComplex: async (id, options) => calls.push({ id, tradesOnly: options.tradesOnly }),
+    Promise,
+  });
+  vm.runInContext(functionsBetween("async function refreshDueFavoriteTrades", "function getLatestTradeRefreshBoundary"), context);
+  await vm.runInContext("refreshDueFavoriteTrades()", context);
+  assert.deepEqual(calls, [
+    { id: "b", tradesOnly: true },
+    { id: "a", tradesOnly: true },
+    { id: "c", tradesOnly: true },
+  ]);
+});
+
+test("마린시티자이 9월 거래는 단지명과 84타입으로 매칭된다", () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionsBetween("function isRtmsItemMatch", "function rtmsItemToTransaction"), context);
+  vm.runInContext(functionsBetween("function normalizeApartmentName", "function updateTradeTags"), context);
+  vm.runInContext(functionsBetween("function normalize(value)", "function stringSimilarity"), context);
+  vm.runInContext(functionsBetween("function getAreaGroupId", "function getAvailableAreaGroupMetas"), context);
+  vm.runInContext('const AREA_GROUPS = [{id:"84",min:83,max:85}];', context);
+  context.complex = { name: "마린시티자이아파트", dong: "우동", lotNumber: "1405-1" };
+  context.item = { aptNm: "마린시티자이", umdNm: "우동", jibun: "1405-1" };
+  assert.equal(vm.runInContext("isRtmsItemMatch(complex, item)", context), true);
+  assert.equal(vm.runInContext("getAreaGroupId(84.7798)", context), "84");
+});
+
 test("조회가 끝난 무거래 단지를 매칭 전으로 표시하지 않는다", () => {
   const context = vm.createContext({});
   vm.runInContext(functionsBetween("function formatNoTradeStatus", "function renderChart"), context);

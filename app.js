@@ -1,5 +1,5 @@
-const APP_VERSION = "v2026.09.22-01";
-const APP_UPDATED_AT = "2026-09-22";
+const APP_VERSION = "v2026.10.08-01";
+const APP_UPDATED_AT = "2026-10-08";
 function getKoreaToday(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
@@ -10,6 +10,8 @@ function getKoreaToday(now = new Date()) {
 
 function getReferenceMonth() { return getKoreaToday().slice(0, 7); }
 const MAX_FAVORITES = 20;
+const TRADE_RETRY_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const TRADE_REFRESH_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const FAVORITES_KEY = "apt-monitor-favorites-v1";
 const CUSTOM_COMPLEXES_KEY = "apt-monitor-custom-complexes-v1";
 const API_CONFIG_KEY = "apt-monitor-api-config-v1";
@@ -73,6 +75,7 @@ const state = {
   favoriteSortable: null,
   comparisonSortable: null,
   supplyProfileRequests: {},
+  tradeRefreshRunning: false,
 };
 
 const el = {
@@ -100,6 +103,7 @@ const el = {
   chartSubtitle: document.querySelector("#chartSubtitle"),
   transactionList: document.querySelector("#transactionList"),
   transactionSubtitle: document.querySelector("#transactionSubtitle"),
+  refreshTradesButton: document.querySelector("#refreshTradesButton"),
   comparisonTable: document.querySelector("#comparisonTable"),
   rangeSelect: document.querySelector("#rangeSelect"),
   headerAreaSelect: document.querySelector("#headerAreaSelect"),
@@ -142,6 +146,8 @@ function initialize() {
   render();
   initializeFavoriteSorting();
   initializeComparisonSorting();
+  refreshDueFavoriteTrades();
+  window.setInterval(refreshDueFavoriteTrades, TRADE_REFRESH_CHECK_INTERVAL_MS);
 }
 
 function bindEvents() {
@@ -157,6 +163,13 @@ function bindEvents() {
     ensureValidAreaGroup();
     saveFavorites();
     render();
+  });
+
+  el.refreshTradesButton.addEventListener("click", () => {
+    const complex = getSelectedComplex();
+    if (complex && complex.tradeStatus !== "loading") {
+      refreshRealTransactionsForComplex(complex.id, { tradesOnly: Boolean(complex.lastTradeSync) });
+    }
   });
 
   el.rangeSelect.addEventListener("change", () => {
@@ -1061,10 +1074,48 @@ function refreshPendingFavoriteTrades() {
     .forEach((complex) => refreshSupplyProfileForComplex(complex.id));
 
   favoriteComplexes
-    .filter((complex) => !transactionsByComplex[complex.id]?.length)
-    .filter((complex) => !["loading", "loaded", "empty"].includes(complex.tradeStatus))
+    .filter((complex) => complex.tradeStatus !== "loading")
+    .filter((complex) =>
+      !transactionsByComplex[complex.id]?.length && !["loaded", "empty"].includes(complex.tradeStatus)
+    )
     .slice(0, 3)
     .forEach((complex) => refreshRealTransactionsForComplex(complex.id));
+}
+
+async function refreshDueFavoriteTrades() {
+  if (state.tradeRefreshRunning) return;
+  state.tradeRefreshRunning = true;
+  try {
+    const due = state.favorites
+      .map((id) => COMPLEXES.find((complex) => complex.id === id))
+      .filter((complex) => isUserRegisteredSource(complex?.source) && needsTradeRefresh(complex))
+      .sort((a, b) => Number(b.id === state.selectedComplexId) - Number(a.id === state.selectedComplexId));
+    for (let index = 0; index < due.length; index += 2) {
+      await Promise.allSettled(due.slice(index, index + 2).map((complex) =>
+        needsTradeRefresh(complex)
+          ? refreshRealTransactionsForComplex(complex.id, { tradesOnly: true })
+          : Promise.resolve()
+      ));
+    }
+  } finally {
+    state.tradeRefreshRunning = false;
+  }
+}
+
+function getLatestTradeRefreshBoundary(now = new Date()) {
+  const today = getKoreaToday(now);
+  const day = Number(today.slice(8, 10));
+  return Date.parse(`${today.slice(0, 7)}-${day >= 15 ? "15" : "01"}T00:00:00+09:00`);
+}
+
+function needsTradeRefresh(complex, now = new Date()) {
+  if (!["loaded", "empty", "error"].includes(complex?.tradeStatus)) return false;
+  const lastSync = Date.parse(complex.lastTradeSync || "");
+  const boundary = getLatestTradeRefreshBoundary(now);
+  if (Number.isFinite(lastSync) && lastSync >= boundary) return false;
+  if (complex.tradeStatus === "error" && !Number.isFinite(lastSync) && !complex.realTransactions?.length) return false;
+  const lastAttempt = Date.parse(complex.lastTradeAttempt || "");
+  return !Number.isFinite(lastAttempt) || lastAttempt < boundary || now.getTime() - lastAttempt >= TRADE_RETRY_INTERVAL_MS;
 }
 
 async function refreshAptIdentityInfoForComplex(complexId) {
@@ -1173,9 +1224,9 @@ function needsSupplyProfile(complex) {
   );
 }
 
-async function refreshRealTransactionsForComplex(complexId) {
+async function refreshRealTransactionsForComplex(complexId, { tradesOnly = false } = {}) {
   const complex = COMPLEXES.find((item) => item.id === complexId);
-  if (!complex) return;
+  if (!complex || complex.tradeStatus === "loading") return;
 
   if (!hasMolitApiAccess()) {
     complex.tradeStatus = "error";
@@ -1186,6 +1237,7 @@ async function refreshRealTransactionsForComplex(complexId) {
 
   complex.tradeStatus = "loading";
   complex.tradeMessage = "단지 행정정보 확인 중";
+  complex.lastTradeAttempt = new Date().toISOString();
   render();
 
   try {
@@ -1194,30 +1246,31 @@ async function refreshRealTransactionsForComplex(complexId) {
       throw new Error("단지 행정정보를 확인하지 못했습니다.");
     }
 
-    complex.tradeMessage = "건축물대장 정보 조회 중";
-    render();
-    await enrichBuildingLedgerInfoSafely(complex);
+    if (!tradesOnly) {
+      complex.tradeMessage = "건축물대장 정보 조회 중";
+      render();
+      await enrichBuildingLedgerInfoSafely(complex);
 
-    complex.tradeMessage = "국토부 단지목록 매칭 중";
-    render();
-    try {
-      await matchAptListForComplex(complex);
-    } catch (aptListError) {
-      complex.aptListError = aptListError.message || "국토부 단지목록 조회 실패";
-      complex.tags = updateAptListTags(complex.tags, "error");
-    }
-
-    if (complex.kaptCode) {
-      complex.tradeMessage = "국토부 단지 기본정보 조회 중";
+      complex.tradeMessage = "국토부 단지목록 매칭 중";
       render();
       try {
-        await enrichComplexBasisInfo(complex);
-      } catch (basisError) {
-        complex.basisInfoError = basisError.message || "국토부 단지 기본정보 조회 실패";
+        await matchAptListForComplex(complex);
+      } catch (aptListError) {
+        complex.aptListError = aptListError.message || "국토부 단지목록 조회 실패";
+        complex.tags = updateAptListTags(complex.tags, "error");
       }
-    }
 
-    refreshSupplyProfileForComplex(complex.id);
+      if (complex.kaptCode) {
+        complex.tradeMessage = "국토부 단지 기본정보 조회 중";
+        render();
+        try {
+          await enrichComplexBasisInfo(complex);
+        } catch (basisError) {
+          complex.basisInfoError = basisError.message || "국토부 단지 기본정보 조회 실패";
+        }
+      }
+      refreshSupplyProfileForComplex(complex.id);
+    }
 
     complex.tradeMessage = "국토부 실거래 조회 중";
     render();
@@ -2410,6 +2463,9 @@ function renderGlobalAreaTabs() {
 
 function renderDetail() {
   const complex = getSelectedComplex();
+  el.refreshTradesButton.hidden = !complex;
+  el.refreshTradesButton.disabled = complex?.tradeStatus === "loading";
+  el.refreshTradesButton.textContent = complex?.tradeStatus === "loading" ? "조회 중" : "거래 갱신";
   if (!complex) {
     renderEmptyDetail();
     return;
@@ -2671,9 +2727,12 @@ function renderChart(scopedTransactions) {
 
 function renderTransactions(scopedTransactions) {
   const group = getAreaGroupMeta(state.selectedAreaGroupId);
-  el.transactionSubtitle.textContent = scopedTransactions.length
+  const complex = getSelectedComplex();
+  const lastSync = Date.parse(complex?.lastTradeSync || "");
+  const syncLabel = Number.isFinite(lastSync) ? ` · ${getKoreaToday(new Date(lastSync))} 조회` : "";
+  el.transactionSubtitle.textContent = (scopedTransactions.length
     ? `${group.label} 최근 거래 8건`
-    : formatNoTradeStatus(getSelectedComplex());
+    : formatNoTradeStatus(complex)) + syncLabel;
 
   const rows = scopedTransactions
     .slice()
@@ -2792,6 +2851,10 @@ function selectComplex(id) {
   state.selectedComplexId = id;
   ensureValidAreaGroup();
   render();
+  const complex = getSelectedComplex();
+  if (needsTradeRefresh(complex)) {
+    refreshRealTransactionsForComplex(id, { tradesOnly: true });
+  }
 }
 
 function toggleFavorite(id) {
@@ -2835,6 +2898,8 @@ function toggleFavorite(id) {
       !complex.kaptCode
     ) {
       refreshRealTransactionsForComplex(complex.id);
+    } else if (needsTradeRefresh(complex)) {
+      refreshRealTransactionsForComplex(complex.id, { tradesOnly: true });
     } else {
       refreshSupplyProfileForComplex(complex.id);
     }

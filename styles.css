@@ -1100,6 +1100,22 @@ input:focus-visible {
   text-align: right;
 }
 
+.transaction-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.transaction-actions .ghost-button {
+  min-height: 30px;
+  white-space: nowrap;
+}
+
+.transaction-actions .ghost-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

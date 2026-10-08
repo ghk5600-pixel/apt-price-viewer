@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="app-version" content="v2026.09.15-04" />
-    <meta name="app-updated-at" content="2026-09-15" />
+    <meta name="app-version" content="v2026.10.08-01" />
+    <meta name="app-updated-at" content="2026-10-08" />
     <title>관심단지 실거래 모니터</title>
     <link rel="icon" type="image/png" sizes="128x128" href="favicon.png?v=20260812-02" />
     <link rel="apple-touch-icon" sizes="128x128" href="favicon.png?v=20260812-02" />
@@ -14,7 +14,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+KR:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20260716-01" />
+    <link rel="stylesheet" href="./styles.css?v=20261008-01" />
   </head>
   <body>
     <div class="page-shell">
@@ -153,7 +153,10 @@
           <div class="transaction-card">
             <div class="block-title">
               <span>최근 거래</span>
-              <small id="transactionSubtitle">선택한 면적 그룹 기준</small>
+              <div class="transaction-actions">
+                <small id="transactionSubtitle">선택한 면적 그룹 기준</small>
+                <button class="ghost-button" id="refreshTradesButton" type="button" title="거래 내역은 매월 1일·15일에 자동 갱신됩니다" hidden>거래 갱신</button>
+              </div>
             </div>
             <div class="transaction-list" id="transactionList"></div>
           </div>
@@ -248,6 +251,6 @@
     </div>
 
     <script src="./vendor/sortable-1.15.7.min.js?v=20260716-01"></script>
-    <script src="./app.js?v=20260915-04"></script>
+    <script src="./app.js?v=20261008-01"></script>
   </body>
 </html>
