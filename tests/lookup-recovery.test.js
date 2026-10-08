@@ -32,20 +32,85 @@ test("새로고침 뒤 저장된 실거래 loading 상태를 다시 조회 가�
   );
 });
 
-test("실거래는 한국 시간 매월 1일과 15일 이후 재조회한다", () => {
+test("탭 사이 거래 캐시는 단지별로 동기화하고 오래된 결과가 덮어쓰지 못한다", () => {
+  const values = new Map();
+  const localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const context = vm.createContext({
+    Date,
+    Array,
+    localStorage,
+    TRADE_CACHE_KEY_PREFIX: "test-trade-",
+    COMPLEXES: [{ id: "a" }, { id: "b" }],
+    transactionsByComplex: {},
+  });
+  vm.runInContext(functionsBetween("function normalizeStoredTradeStatus", "function loadCustomComplexes"), context);
+  const newer = {
+    id: "a", realTransactions: [{ priceEok: 16 }], tradeStatus: "loaded",
+    lastTradeSync: "2026-10-08T01:00:00Z", lastFullTradeSync: "2026-10-01T01:00:00Z",
+    lastTradeAttempt: "2026-10-08T00:59:00Z",
+  };
+  context.complex = newer;
+  assert.equal(vm.runInContext("saveTradeCache(complex)", context), true);
+  context.complex = {
+    ...newer, realTransactions: [{ priceEok: 15 }],
+    lastTradeSync: "2026-10-07T01:00:00Z", lastTradeAttempt: "2026-10-07T00:59:00Z",
+  };
+  assert.equal(vm.runInContext("saveTradeCache(complex)", context), false);
+  assert.equal(JSON.parse(values.get("test-trade-a")).realTransactions[0].priceEok, 16);
+  assert.equal(vm.runInContext('syncStoredTradeCache("a")', context), true);
+  assert.equal(context.COMPLEXES[0].realTransactions[0].priceEok, 16);
+  assert.equal(context.transactionsByComplex.a[0].priceEok, 16);
+  assert.equal(values.has("test-trade-b"), false);
+});
+
+test("두 탭의 같은 단지 갱신은 잠금 뒤 기한을 다시 확인해 한 번만 조회한다", async () => {
+  let lockQueue = Promise.resolve();
+  let fetchCount = 0;
+  const complex = { id: "a", due: true };
+  const context = vm.createContext({
+    Promise,
+    COMPLEXES: [complex],
+    navigator: { locks: { request: (_name, callback) => {
+      const result = lockQueue.then(callback);
+      lockQueue = result.catch(() => {});
+      return result;
+    } } },
+    syncStoredTradeCache: () => {},
+    getTradeRefreshMode: (item) => item.due ? "recent" : null,
+    performRealTransactionsRefresh: async () => {
+      fetchCount += 1;
+      complex.due = false;
+    },
+  });
+  vm.runInContext(functionsBetween("async function refreshRealTransactionsForComplex", "async function performRealTransactionsRefresh"), context);
+  await vm.runInContext('Promise.all([refreshRealTransactionsForComplex("a", {onlyIfDue:true}), refreshRealTransactionsForComplex("a", {onlyIfDue:true})])', context);
+  assert.equal(fetchCount, 1);
+});
+
+test("실거래는 한국 시간 매일 최근 3개월, 1일·15일에는 전체를 조회한다", () => {
   const context = vm.createContext({ Date, Number, Intl, TRADE_RETRY_INTERVAL_MS: 24 * 60 * 60 * 1000 });
   vm.runInContext(functionsBetween("function getKoreaToday", "const MAX_FAVORITES"), context);
   vm.runInContext(functionsBetween("function getLatestTradeRefreshBoundary", "async function refreshAptIdentityInfoForComplex"), context);
-  context.complex = { tradeStatus: "loaded", lastTradeSync: "2026-10-08T00:00:00Z" };
-  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-14T14:59:59Z"))', context), false);
-  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-14T15:00:00Z"))', context), true);
+  context.complex = { tradeStatus: "loaded", lastTradeSync: "2026-10-08T00:00:00Z", lastFullTradeSync: "2026-10-01T00:00:00Z" };
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-08T10:00:00Z"))', context), null);
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-09T00:00:00Z"))', context), "recent");
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-14T14:59:59Z"))', context), "recent");
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-14T15:00:00Z"))', context), "full");
   context.complex.lastTradeSync = "2026-10-14T15:01:00Z";
-  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-15T00:00:00Z"))', context), false);
-  context.complex = { tradeStatus: "empty", lastTradeSync: "2026-09-16T00:00:00Z" };
-  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-09-30T15:00:00Z"))', context), true);
-  context.complex = { tradeStatus: "error", realTransactions: [{}], lastTradeSync: "2026-10-08T00:00:00Z", lastTradeAttempt: "2026-10-14T15:05:00Z" };
-  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-14T16:00:00Z"))', context), false);
-  assert.equal(vm.runInContext('needsTradeRefresh(complex, new Date("2026-10-15T16:00:00Z"))', context), true);
+  context.complex.lastFullTradeSync = "2026-10-14T15:01:00Z";
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-15T00:00:00Z"))', context), null);
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-17T15:00:00Z"))', context), "recent");
+  context.complex = { tradeStatus: "loaded", lastTradeSync: "2026-10-03T00:00:00Z", lastFullTradeSync: "2026-10-01T00:00:00Z" };
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-18T00:00:00Z"))', context), "full");
+  context.complex = { tradeStatus: "error", realTransactions: [{}], lastTradeSync: "2026-10-08T00:00:00Z", lastFullTradeSync: "2026-10-01T00:00:00Z", lastTradeAttempt: "2026-10-14T15:05:00Z" };
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-14T16:00:00Z"))', context), null);
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-15T16:00:00Z"))', context), "full");
+  context.complex = { tradeStatus: "error", realTransactions: [], lastTradeAttempt: "2026-10-14T15:05:00Z" };
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-14T16:00:00Z"))', context), null);
+  assert.equal(vm.runInContext('getTradeRefreshMode(complex, new Date("2026-10-15T16:00:00Z"))', context), "full");
 });
 
 test("갱신일에는 모든 관심단지의 거래만 순차 조회한다", async () => {
@@ -54,7 +119,7 @@ test("갱신일에는 모든 관심단지의 거래만 순차 조회한다", asy
     state: { favorites: ["a", "b", "c"], selectedComplexId: "b", tradeRefreshRunning: false },
     COMPLEXES: ["a", "b", "c"].map((id) => ({ id, source: "kakao" })),
     isUserRegisteredSource: () => true,
-    needsTradeRefresh: () => true,
+    getTradeRefreshMode: () => "recent",
     refreshRealTransactionsForComplex: async (id, options) => calls.push({ id, tradesOnly: options.tradesOnly }),
     Promise,
   });
@@ -65,6 +130,70 @@ test("갱신일에는 모든 관심단지의 거래만 순차 조회한다", asy
     { id: "a", tradesOnly: true },
     { id: "c", tradesOnly: true },
   ]);
+});
+
+test("부분 갱신은 조회한 월을 교체하고 다른 월의 거래를 보존한다", () => {
+  const context = vm.createContext({ Set });
+  vm.runInContext(functionsBetween("function mergeRefreshedTransactions", "function enrichComplexLocationFromKakao"), context);
+  context.existing = [
+    { month: "2026-08", date: "2026-08-02", priceEok: 12 },
+    { month: "2026-09", date: "2026-09-30", priceEok: 15 },
+    { month: "2026-10", date: "2026-10-01", priceEok: 13 },
+  ];
+  context.refreshed = [{ month: "2026-09", date: "2026-09-30", priceEok: 16 }];
+  const merged = vm.runInContext('mergeRefreshedTransactions(existing, refreshed, ["2026-09", "2026-10"], ["2026-08", "2026-09", "2026-10"])', context);
+  assert.deepEqual(Array.from(merged, (tx) => tx.priceEok), [12, 16]);
+});
+
+test("월별 국토부 요청은 화면 전체에서 최대 네 개만 동시에 실행한다", async () => {
+  let active = 0;
+  let peak = 0;
+  const context = vm.createContext({
+    Promise,
+    RTMS_MAX_CONCURRENT_MONTHS: 4,
+    rtmsMonthQueue: [],
+    fetchRtmsMonth: async ({ dealYmd }) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      return [{ dealYmd }];
+    },
+  });
+  vm.runInContext('let activeRtmsMonths = 0;', context);
+  vm.runInContext(functionsBetween("async function fetchRtmsItemsForComplex", "async function fetchRtmsMonth"), context);
+  const result = await vm.runInContext('Promise.all([fetchRtmsItemsForComplex({legalDongCode:"26350"}, ["2026-01","2026-02","2026-03","2026-04"]), fetchRtmsItemsForComplex({legalDongCode:"26350"}, ["2026-05","2026-06","2026-07","2026-08"])])', context);
+  assert.equal(peak, 4);
+  assert.equal(result.flatMap((item) => item.monthly).length, 8);
+  assert.equal(result.flatMap((item) => item.failedMonths).length, 0);
+});
+
+test("월별 조회가 일부 실패해도 성공한 월만 교체하고 실패한 월은 보존한다", async () => {
+  const context = vm.createContext({
+    Promise,
+    Set,
+    RTMS_MAX_CONCURRENT_MONTHS: 4,
+    rtmsMonthQueue: [],
+    fetchRtmsMonth: async ({ dealYmd }) => {
+      if (dealYmd === "202609") throw new Error("일시 장애");
+      return [{ dealYmd }];
+    },
+  });
+  vm.runInContext('let activeRtmsMonths = 0;', context);
+  vm.runInContext(functionsBetween("async function fetchRtmsItemsForComplex", "async function fetchRtmsMonth"), context);
+  vm.runInContext(functionsBetween("function mergeRefreshedTransactions", "function enrichComplexLocationFromKakao"), context);
+  const result = await vm.runInContext('fetchRtmsItemsForComplex({legalDongCode:"26350"}, ["2026-08","2026-09","2026-10"])', context);
+  assert.deepEqual(Array.from(result.monthly, ({ month }) => month), ["2026-08", "2026-10"]);
+  assert.deepEqual(Array.from(result.failedMonths), ["2026-09"]);
+  context.existing = [
+    { month: "2026-08", date: "2026-08-02", priceEok: 12 },
+    { month: "2026-09", date: "2026-09-30", priceEok: 15 },
+    { month: "2026-10", date: "2026-10-01", priceEok: 13 },
+  ];
+  context.refreshed = [{ month: "2026-10", date: "2026-10-02", priceEok: 16 }];
+  context.successfulMonths = result.monthly.map(({ month }) => month);
+  const merged = vm.runInContext('mergeRefreshedTransactions(existing, refreshed, successfulMonths, ["2026-08", "2026-09", "2026-10"])', context);
+  assert.deepEqual(Array.from(merged, (tx) => tx.priceEok), [15, 16]);
 });
 
 test("마린시티자이 9월 거래는 단지명과 84타입으로 매칭된다", () => {

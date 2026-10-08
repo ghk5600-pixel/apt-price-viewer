@@ -1,4 +1,4 @@
-const APP_VERSION = "v2026.10.08-01";
+const APP_VERSION = "v2026.10.08-02";
 const APP_UPDATED_AT = "2026-10-08";
 function getKoreaToday(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -12,9 +12,13 @@ function getReferenceMonth() { return getKoreaToday().slice(0, 7); }
 const MAX_FAVORITES = 20;
 const TRADE_RETRY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const TRADE_REFRESH_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const TRADE_RECENT_MONTHS = 3;
+const RTMS_MAX_CONCURRENT_MONTHS = 4;
 const FAVORITES_KEY = "apt-monitor-favorites-v1";
 const CUSTOM_COMPLEXES_KEY = "apt-monitor-custom-complexes-v1";
 const API_CONFIG_KEY = "apt-monitor-api-config-v1";
+const TRADE_CACHE_KEY_PREFIX = "apt-monitor-trades-v1:";
+const TRADE_LOCK_KEY_PREFIX = "apt-monitor-trade-lock-v1:";
 const RTMS_API_ENDPOINT = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade";
 const RTMS_API_OPERATION = "getRTMSDataSvcAptTrade";
 const APT_LIST_API_ENDPOINT = "https://apis.data.go.kr/1613000/AptListService4";
@@ -125,6 +129,8 @@ const transactionsByComplex = Object.fromEntries(
     Array.isArray(complex.realTransactions) ? complex.realTransactions : buildTransactions(complex),
   ])
 );
+const rtmsMonthQueue = [];
+let activeRtmsMonths = 0;
 
 initialize();
 
@@ -143,6 +149,10 @@ function initialize() {
   ensureValidAreaGroup();
   fillHeaderControls();
   bindEvents();
+  window.addEventListener("storage", (event) => {
+    if (!event.key?.startsWith(TRADE_CACHE_KEY_PREFIX) || !event.newValue) return;
+    if (syncStoredTradeCache(event.key.slice(TRADE_CACHE_KEY_PREFIX.length))) render();
+  });
   render();
   initializeFavoriteSorting();
   initializeComparisonSorting();
@@ -168,7 +178,7 @@ function bindEvents() {
   el.refreshTradesButton.addEventListener("click", () => {
     const complex = getSelectedComplex();
     if (complex && complex.tradeStatus !== "loading") {
-      refreshRealTransactionsForComplex(complex.id, { tradesOnly: Boolean(complex.lastTradeSync) });
+      refreshRealTransactionsForComplex(complex.id, { tradesOnly: Boolean(complex.lastTradeSync), refreshMode: "full" });
     }
   });
 
@@ -1074,7 +1084,7 @@ function refreshPendingFavoriteTrades() {
     .forEach((complex) => refreshSupplyProfileForComplex(complex.id));
 
   favoriteComplexes
-    .filter((complex) => complex.tradeStatus !== "loading")
+    .filter((complex) => complex.tradeStatus === "idle")
     .filter((complex) =>
       !transactionsByComplex[complex.id]?.length && !["loaded", "empty"].includes(complex.tradeStatus)
     )
@@ -1088,12 +1098,12 @@ async function refreshDueFavoriteTrades() {
   try {
     const due = state.favorites
       .map((id) => COMPLEXES.find((complex) => complex.id === id))
-      .filter((complex) => isUserRegisteredSource(complex?.source) && needsTradeRefresh(complex))
+      .filter((complex) => isUserRegisteredSource(complex?.source) && getTradeRefreshMode(complex))
       .sort((a, b) => Number(b.id === state.selectedComplexId) - Number(a.id === state.selectedComplexId));
     for (let index = 0; index < due.length; index += 2) {
       await Promise.allSettled(due.slice(index, index + 2).map((complex) =>
-        needsTradeRefresh(complex)
-          ? refreshRealTransactionsForComplex(complex.id, { tradesOnly: true })
+        getTradeRefreshMode(complex)
+          ? refreshRealTransactionsForComplex(complex.id, { tradesOnly: true, onlyIfDue: true })
           : Promise.resolve()
       ));
     }
@@ -1108,14 +1118,24 @@ function getLatestTradeRefreshBoundary(now = new Date()) {
   return Date.parse(`${today.slice(0, 7)}-${day >= 15 ? "15" : "01"}T00:00:00+09:00`);
 }
 
-function needsTradeRefresh(complex, now = new Date()) {
+function getTradeRefreshMode(complex, now = new Date()) {
   if (!["loaded", "empty", "error"].includes(complex?.tradeStatus)) return false;
-  const lastSync = Date.parse(complex.lastTradeSync || "");
+  const lastSync = parsePastTradeTimestamp(complex.lastTradeSync, now);
+  const lastFullSync = parsePastTradeTimestamp(complex.lastFullTradeSync, now);
   const boundary = getLatestTradeRefreshBoundary(now);
-  if (Number.isFinite(lastSync) && lastSync >= boundary) return false;
-  if (complex.tradeStatus === "error" && !Number.isFinite(lastSync) && !complex.realTransactions?.length) return false;
-  const lastAttempt = Date.parse(complex.lastTradeAttempt || "");
-  return !Number.isFinite(lastAttempt) || lastAttempt < boundary || now.getTime() - lastAttempt >= TRADE_RETRY_INTERVAL_MS;
+  const mode = !Number.isFinite(lastFullSync) || lastFullSync < boundary
+    ? "full"
+    : !Number.isFinite(lastSync) || getKoreaToday(new Date(lastSync)) !== getKoreaToday(now)
+      ? "recent"
+      : null;
+  if (!mode || complex.tradeStatus !== "error") return mode;
+  const lastAttempt = parsePastTradeTimestamp(complex.lastTradeAttempt, now);
+  return !Number.isFinite(lastAttempt) || now.getTime() - lastAttempt >= TRADE_RETRY_INTERVAL_MS ? mode : null;
+}
+
+function parsePastTradeTimestamp(value, now = new Date()) {
+  const timestamp = Date.parse(value || "");
+  return Number.isFinite(timestamp) && timestamp <= now.getTime() ? timestamp : NaN;
 }
 
 async function refreshAptIdentityInfoForComplex(complexId) {
@@ -1224,7 +1244,48 @@ function needsSupplyProfile(complex) {
   );
 }
 
-async function refreshRealTransactionsForComplex(complexId, { tradesOnly = false } = {}) {
+async function refreshRealTransactionsForComplex(complexId, options = {}) {
+  const perform = async () => {
+    syncStoredTradeCache(complexId);
+    const mode = options.onlyIfDue ? getTradeRefreshMode(COMPLEXES.find((item) => item.id === complexId)) : options.refreshMode || "full";
+    if (!mode) return;
+    return performRealTransactionsRefresh(complexId, { ...options, refreshMode: mode });
+  };
+  if (navigator.locks?.request) {
+    return navigator.locks.request(`apt-monitor-trades:${complexId}`, perform);
+  }
+  return withFallbackTradeLease(complexId, perform);
+}
+
+async function withFallbackTradeLease(complexId, perform) {
+  const key = `${TRADE_LOCK_KEY_PREFIX}${complexId}`;
+  const token = `${Date.now()}-${Math.random()}`;
+  try {
+    const lease = JSON.parse(localStorage.getItem(key) || "null");
+    if (lease?.expiresAt > Date.now()) return;
+    localStorage.setItem(key, JSON.stringify({ token, expiresAt: Date.now() + 120_000 }));
+    if (JSON.parse(localStorage.getItem(key) || "null")?.token !== token) return;
+  } catch {
+    return perform();
+  }
+  const heartbeat = window.setInterval(() => {
+    try {
+      if (JSON.parse(localStorage.getItem(key) || "null")?.token === token) {
+        localStorage.setItem(key, JSON.stringify({ token, expiresAt: Date.now() + 120_000 }));
+      }
+    } catch { /* storage is temporarily unavailable */ }
+  }, 30_000);
+  try {
+    return await perform();
+  } finally {
+    window.clearInterval(heartbeat);
+    try {
+      if (JSON.parse(localStorage.getItem(key) || "null")?.token === token) localStorage.removeItem(key);
+    } catch { /* lease expires if storage is unavailable */ }
+  }
+}
+
+async function performRealTransactionsRefresh(complexId, { tradesOnly = false, refreshMode = "full" } = {}) {
   const complex = COMPLEXES.find((item) => item.id === complexId);
   if (!complex || complex.tradeStatus === "loading") return;
 
@@ -1241,7 +1302,7 @@ async function refreshRealTransactionsForComplex(complexId, { tradesOnly = false
   render();
 
   try {
-    await enrichComplexLocationFromKakao(complex);
+    if (!complex.legalDongCode) await enrichComplexLocationFromKakao(complex);
     if (!complex.legalDongCode) {
       throw new Error("단지 행정정보를 확인하지 못했습니다.");
     }
@@ -1275,21 +1336,33 @@ async function refreshRealTransactionsForComplex(complexId, { tradesOnly = false
     complex.tradeMessage = "국토부 실거래 조회 중";
     render();
 
-    const apiItems = await fetchRtmsItemsForComplex(complex);
-    const matched = apiItems.filter((item) => isRtmsItemMatch(complex, item));
-    const transactions = matched
+    const monthsToRefresh = buildMonthRange(getReferenceMonth(), refreshMode === "recent" ? TRADE_RECENT_MONTHS : 24);
+    const { monthly, failedMonths } = await fetchRtmsItemsForComplex(complex, monthsToRefresh);
+    const refreshed = monthly.flatMap(({ items }) => items
+      .filter((item) => isRtmsItemMatch(complex, item))
       .map((item, index) => rtmsItemToTransaction(complex, item, index))
-      .filter(Boolean)
-      .sort((a, b) => a.date.localeCompare(b.date));
+      .filter(Boolean));
+    const transactions = mergeRefreshedTransactions(
+      transactionsByComplex[complex.id] || [],
+      refreshed,
+      monthly.map(({ month }) => month),
+      buildMonthRange(getReferenceMonth(), 24)
+    );
 
     transactionsByComplex[complex.id] = transactions;
     complex.realTransactions = transactions;
-    complex.tradeStatus = transactions.length ? "loaded" : "empty";
-    complex.tradeMessage = transactions.length
-      ? `국토부 실거래 ${transactions.length}건 매칭`
-      : "국토부 자료는 조회됐지만 단지명/지번 매칭 거래가 없습니다.";
-    complex.lastTradeSync = new Date().toISOString();
+    complex.tradeStatus = failedMonths.length ? "error" : transactions.length ? "loaded" : "empty";
+    complex.tradeMessage = failedMonths.length
+      ? `실거래 ${monthly.length}개월 갱신 · ${failedMonths.length}개월 조회 실패`
+      : transactions.length
+        ? `국토부 실거래 ${transactions.length}건 매칭`
+        : "국토부 자료는 조회됐지만 단지명/지번 매칭 거래가 없습니다.";
+    if (!failedMonths.length) {
+      complex.lastTradeSync = new Date().toISOString();
+      if (refreshMode === "full") complex.lastFullTradeSync = complex.lastTradeSync;
+    }
     complex.tags = updateTradeTags(complex.tags, complex.tradeStatus);
+    saveTradeCache(complex);
     saveCustomComplexes();
     ensureValidAreaGroup();
     render();
@@ -1297,9 +1370,19 @@ async function refreshRealTransactionsForComplex(complexId, { tradesOnly = false
     complex.tradeStatus = "error";
     complex.tradeMessage = error.message || "국토부 실거래 조회에 실패했습니다.";
     complex.tags = updateTradeTags(complex.tags, "error");
+    saveTradeCache(complex);
     saveCustomComplexes();
     render();
   }
+}
+
+function mergeRefreshedTransactions(existing, refreshed, refreshedMonths, visibleMonths) {
+  const replaced = new Set(refreshedMonths);
+  const visible = new Set(visibleMonths);
+  return [
+    ...existing.filter((transaction) => visible.has(transaction.month) && !replaced.has(transaction.month)),
+    ...refreshed.filter((transaction) => visible.has(transaction.month)),
+  ].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function enrichComplexLocationFromKakao(complex) {
@@ -1920,12 +2003,40 @@ function extractBuildingLedgerParkingTotal(items) {
   return total > 0 ? total : null;
 }
 
-async function fetchRtmsItemsForComplex(complex) {
-  const months = buildMonthRange(getReferenceMonth(), 24).map((month) => month.replace("-", ""));
-  const batches = await Promise.all(
-    months.map((dealYmd) => fetchRtmsMonth({ lawdCd: complex.legalDongCode, dealYmd }))
-  );
-  return batches.flat();
+async function fetchRtmsItemsForComplex(complex, months = buildMonthRange(getReferenceMonth(), 24)) {
+  const monthly = [];
+  const failedMonths = [];
+  for (let index = 0; index < months.length; index += RTMS_MAX_CONCURRENT_MONTHS) {
+    const batchMonths = months.slice(index, index + RTMS_MAX_CONCURRENT_MONTHS);
+    const batch = await Promise.allSettled(batchMonths.map((month) =>
+      queueRtmsMonth({ lawdCd: complex.legalDongCode, dealYmd: month.replace("-", "") })
+    ));
+    batch.forEach((result, offset) => {
+      if (result.status === "fulfilled") monthly.push({ month: batchMonths[offset], items: result.value });
+      else failedMonths.push(batchMonths[offset]);
+    });
+  }
+  return { monthly, failedMonths };
+}
+
+function queueRtmsMonth(args) {
+  return new Promise((resolve, reject) => {
+    rtmsMonthQueue.push({ args, resolve, reject });
+    pumpRtmsMonthQueue();
+  });
+}
+
+function pumpRtmsMonthQueue() {
+  while (activeRtmsMonths < RTMS_MAX_CONCURRENT_MONTHS && rtmsMonthQueue.length) {
+    const task = rtmsMonthQueue.shift();
+    activeRtmsMonths += 1;
+    fetchRtmsMonth(task.args)
+      .then(task.resolve, task.reject)
+      .finally(() => {
+        activeRtmsMonths -= 1;
+        pumpRtmsMonthQueue();
+      });
+  }
 }
 
 async function fetchRtmsMonth({ lawdCd, dealYmd }) {
@@ -2852,8 +2963,8 @@ function selectComplex(id) {
   ensureValidAreaGroup();
   render();
   const complex = getSelectedComplex();
-  if (needsTradeRefresh(complex)) {
-    refreshRealTransactionsForComplex(id, { tradesOnly: true });
+  if (getTradeRefreshMode(complex)) {
+    refreshRealTransactionsForComplex(id, { tradesOnly: true, onlyIfDue: true });
   }
 }
 
@@ -2898,8 +3009,8 @@ function toggleFavorite(id) {
       !complex.kaptCode
     ) {
       refreshRealTransactionsForComplex(complex.id);
-    } else if (needsTradeRefresh(complex)) {
-      refreshRealTransactionsForComplex(complex.id, { tradesOnly: true });
+    } else if (getTradeRefreshMode(complex)) {
+      refreshRealTransactionsForComplex(complex.id, { tradesOnly: true, onlyIfDue: true });
     } else {
       refreshSupplyProfileForComplex(complex.id);
     }
@@ -3523,13 +3634,76 @@ function normalizeStoredTradeStatus(complex) {
     : "idle";
 }
 
+function tradeCacheKey(complexId) {
+  return `${TRADE_CACHE_KEY_PREFIX}${complexId}`;
+}
+
+function readStoredTradeCache(complexId) {
+  try {
+    const value = JSON.parse(localStorage.getItem(tradeCacheKey(complexId)) || "null");
+    return value && Array.isArray(value.realTransactions) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function syncStoredTradeCache(complexId) {
+  const complex = COMPLEXES.find((item) => item.id === complexId);
+  const stored = readStoredTradeCache(complexId);
+  if (!complex || !stored) return false;
+  const storedSync = Date.parse(stored.lastTradeSync || "") || 0;
+  const currentSync = Date.parse(complex.lastTradeSync || "") || 0;
+  if (storedSync < currentSync) return false;
+  const storedAttempt = Date.parse(stored.lastTradeAttempt || "") || 0;
+  const currentAttempt = Date.parse(complex.lastTradeAttempt || "") || 0;
+  if (storedSync === currentSync && storedAttempt < currentAttempt) return false;
+  Object.assign(complex, {
+    realTransactions: stored.realTransactions,
+    tradeStatus: normalizeStoredTradeStatus(stored),
+    tradeMessage: stored.tradeMessage || complex.tradeMessage,
+    lastTradeSync: stored.lastTradeSync || "",
+    lastFullTradeSync: stored.lastFullTradeSync || "",
+    lastTradeAttempt: stored.lastTradeAttempt || "",
+  });
+  transactionsByComplex[complexId] = stored.realTransactions;
+  return true;
+}
+
+function saveTradeCache(complex) {
+  try {
+    const stored = readStoredTradeCache(complex.id);
+    const storedAttempt = Date.parse(stored?.lastTradeAttempt || "") || 0;
+    const ownAttempt = Date.parse(complex.lastTradeAttempt || "") || 0;
+    if (storedAttempt > ownAttempt) {
+      syncStoredTradeCache(complex.id);
+      return false;
+    }
+    localStorage.setItem(tradeCacheKey(complex.id), JSON.stringify({
+      realTransactions: complex.realTransactions || [],
+      tradeStatus: complex.tradeStatus,
+      tradeMessage: complex.tradeMessage,
+      lastTradeSync: complex.lastTradeSync || "",
+      lastFullTradeSync: complex.lastFullTradeSync || "",
+      lastTradeAttempt: complex.lastTradeAttempt || "",
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function loadCustomComplexes() {
   try {
     const saved = JSON.parse(localStorage.getItem(CUSTOM_COMPLEXES_KEY) || "[]");
     if (!Array.isArray(saved)) return [];
     return saved
       .filter((complex) => complex && complex.id && complex.name && complex.lat && complex.lng)
-      .map((complex) => ({
+      .map((complex) => {
+        const cachedTrade = readStoredTradeCache(complex.id);
+        const trade = cachedTrade && (Date.parse(cachedTrade.lastTradeSync || "") || 0) >= (Date.parse(complex.lastTradeSync || "") || 0)
+          ? cachedTrade
+          : complex;
+        return {
         ...complex,
         bases: isUserRegisteredSource(complex.source) ? {} : complex.bases || {},
         legalDongFullCode: complex.legalDongFullCode || "",
@@ -3568,27 +3742,42 @@ function loadCustomComplexes() {
         lastSupplyProfileSync: complex.lastSupplyProfileSync || "",
         pendingSupplyRegistrationToken: complex.pendingSupplyRegistrationToken || "",
         lastBasisSync: complex.lastBasisSync || "",
-        realTransactions: Array.isArray(complex.realTransactions) ? complex.realTransactions : [],
-        tradeStatus: normalizeStoredTradeStatus(complex),
-        tradeMessage: complex.tradeMessage || "국토부 실거래 조회 전",
+        realTransactions: Array.isArray(trade.realTransactions) ? trade.realTransactions : [],
+        tradeStatus: normalizeStoredTradeStatus(trade),
+        tradeMessage: trade.tradeMessage || "국토부 실거래 조회 전",
+        lastTradeSync: trade.lastTradeSync || "",
+        lastFullTradeSync: trade.lastFullTradeSync || "",
+        lastTradeAttempt: trade.lastTradeAttempt || "",
         tags:
           isUserRegisteredSource(complex.source)
             ? updateAptListTags(
                 updateTradeTags(
                   complex.tags || [],
-                  normalizeStoredTradeStatus(complex)
+                  normalizeStoredTradeStatus(trade)
                 ),
                 complex.kaptCode ? "matched" : Array.isArray(complex.aptListCandidates) && complex.aptListCandidates.length ? "candidates" : "idle"
               )
             : complex.tags || [],
-      }));
+        };
+      });
   } catch {
     return [];
   }
 }
 
 function saveCustomComplexes() {
-  const customComplexes = COMPLEXES.filter((complex) => isUserRegisteredSource(complex.source));
+  const customComplexes = COMPLEXES
+    .filter((complex) => isUserRegisteredSource(complex.source))
+    .map((complex) => {
+      const cachedTrade = readStoredTradeCache(complex.id);
+      if (!cachedTrade || (Date.parse(cachedTrade.lastTradeSync || "") || 0) < (Date.parse(complex.lastTradeSync || "") || 0)) return complex;
+      const {
+        realTransactions, tradeStatus, tradeMessage,
+        lastTradeSync, lastFullTradeSync, lastTradeAttempt,
+        ...metadata
+      } = complex;
+      return metadata;
+    });
   localStorage.setItem(CUSTOM_COMPLEXES_KEY, JSON.stringify(customComplexes));
 }
 
